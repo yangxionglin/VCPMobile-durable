@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   device-archive:
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     timeout-minutes: 90
     outputs:
       artifact_id: ${{ steps.artifacts.outputs.artifact-id }}
