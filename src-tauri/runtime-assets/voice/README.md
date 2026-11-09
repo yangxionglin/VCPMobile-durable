@@ -33,10 +33,10 @@ python src-tauri/runtime-assets/voice/build_runtime.py android --android-sdk D:/
 
 只支持 Android `arm64-v8a`、API 26，NDK 固定 `29.0.14206865`。输出 `android/onnxruntime-silero-1.24.2.aar` 与 `android/build-report.json`，后者记录库/包实际字节数、哈希和裁剪参数。Android 普通构建使用已生成的 AAR，不临时下载或构建 ORT。
 
-iOS（macOS + Xcode，必须先于 SwiftPM 解析）：
+iOS（macOS + Xcode，必须先于 SwiftPM 解析）：日常归档使用已锁定模型，只安装 `requirements-compile.txt`。`requirements-build.txt` 额外包含模型重转换和 host 验数依赖；其中 ONNX Runtime 1.24.2 的 Python wheel 不支持 Intel macOS，不应成为原生 arm64 交叉编译的前置条件。
 
 ```sh
-python3 -m pip install -r src-tauri/runtime-assets/voice/requirements-build.txt
+python3 -m pip install -r src-tauri/runtime-assets/voice/requirements-compile.txt
 python3 src-tauri/runtime-assets/voice/build_runtime.py ios --cache-dir /tmp/vcpmobile-silero-runtime --jobs 6
 ```
 

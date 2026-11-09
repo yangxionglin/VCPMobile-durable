@@ -84,7 +84,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/voice-venv"
           source "$RUNNER_TEMP/voice-venv/bin/activate"
-          python -m pip install --disable-pip-version-check -r src-tauri/runtime-assets/voice/requirements-build.txt
+          python -m pip install --disable-pip-version-check -r src-tauri/runtime-assets/voice/requirements-compile.txt
           python src-tauri/runtime-assets/voice/build_runtime.py ios --cache-dir "$RUNNER_TEMP/voice-cache"
       - name: Generate the Xcode project
         run: pnpm tauri ios init --ci --skip-targets-install

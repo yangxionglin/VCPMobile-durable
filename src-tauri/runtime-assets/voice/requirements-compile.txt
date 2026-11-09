@@ -1,0 +1,4 @@
+# Native runtime compilation from the checked-in, hash-locked ORT model.
+# No host onnxruntime wheel is needed unless the model is regenerated.
+numpy==2.2.6
+flatbuffers==25.12.19
