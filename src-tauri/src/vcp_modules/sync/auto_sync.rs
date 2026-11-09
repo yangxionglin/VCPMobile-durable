@@ -3,15 +3,37 @@ use super::sync_service::{start_manual_sync, SyncState};
 use crate::vcp_modules::db_manager::DbState;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Default)]
 pub(crate) struct AutoSync {
+    admission: Arc<Mutex<()>>,
     requested: AtomicU64,
     wake: Notify,
     finished: Mutex<BTreeMap<u64, bool>>,
+}
+
+// Serialize the short admission windows, never the whole model generation.
+// The caller holds this through begin_stream_message's transaction commit.
+pub(crate) async fn before_chat<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
+    let Some(state) = app.try_state::<AutoSync>() else {
+        return Ok(None);
+    };
+    let guard = state.admission.clone().lock_owned().await;
+    super::sync_service::stop_sync_before_chat(app).await?;
+    Ok(Some(guard))
+}
+
+pub(crate) async fn admit_sync<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let state = app.try_state::<AutoSync>()?;
+    Some(state.admission.clone().lock_owned().await)
 }
 
 pub(crate) fn request<R: Runtime>(app: &AppHandle<R>) {
@@ -37,7 +59,7 @@ pub(crate) fn install(app: &AppHandle) {
     if !cfg!(target_os = "ios") {
         return;
     }
-    if !app.manage(AutoSync::default()) {
+    if app.try_state::<AutoSync>().is_none() {
         return;
     }
     let app = app.clone();

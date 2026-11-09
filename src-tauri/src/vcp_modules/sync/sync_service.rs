@@ -3281,8 +3281,24 @@ pub(crate) async fn suspend_sync_for_background(handle: &AppHandle) -> Result<()
     stop_sync_session(handle, &state, true).await
 }
 
-async fn stop_sync_session(
-    handle: &AppHandle,
+pub(crate) async fn stop_sync_before_chat<R: Runtime>(handle: &AppHandle<R>) -> Result<(), String> {
+    let Some(state) = handle.try_state::<SyncState>() else {
+        return Ok(());
+    };
+    let running = state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|session| !session.join_handle.is_finished());
+    if running {
+        stop_sync_session(handle, &state, false).await?;
+    }
+    Ok(())
+}
+
+async fn stop_sync_session<R: Runtime>(
+    handle: &AppHandle<R>,
     state: &SyncState,
     notify_background: bool,
 ) -> Result<(), String> {
@@ -3392,7 +3408,7 @@ async fn finish_sync_session(handle: &AppHandle, session_id: u64, outcome: &Resu
     super::auto_sync::session_finished(handle, session_id, outcome.is_ok() && completed).await;
 }
 
-fn emit_sync_interruption(handle: &AppHandle, session_id: u64, code: &str) {
+fn emit_sync_interruption<R: Runtime>(handle: &AppHandle<R>, session_id: u64, code: &str) {
     let error = build_local_error_payload(code, Vec::new(), None);
     let transfer = session_transfer_snapshot(handle, session_id, true);
     let _ = handle.emit(
@@ -3422,6 +3438,7 @@ pub async fn start_manual_sync(
     handle: AppHandle,
     state: State<'_, SyncState>,
 ) -> Result<u64, String> {
+    let _admission = super::auto_sync::admit_sync(&handle).await;
     let _lifecycle_guard = state.lifecycle.lock().await;
 
     #[cfg(target_os = "ios")]
@@ -3839,6 +3856,58 @@ mod tests {
         let app = tauri::test::mock_app();
         assert!(app.manage(test_sync_state(session_id)));
         app
+    }
+
+    #[tokio::test]
+    async fn chat_admission_waits_for_sync_writes_and_blocks_another_sync_start() {
+        let app = mock_sync_app(1);
+        assert!(app.manage(super::super::auto_sync::AutoSync::default()));
+        let cancel = CancellationToken::new();
+        let drain = Arc::new(tokio::sync::Notify::new());
+        let worker_cancel = cancel.clone();
+        let worker_drain = drain.clone();
+        let join_handle = tokio::spawn(async move {
+            worker_cancel.cancelled().await;
+            worker_drain.notified().await; // already-accepted database writes
+            Ok(())
+        });
+        *app.state::<SyncState>().session.lock().await = Some(SyncSessionHandle {
+            session_id: 1,
+            cancel_token: cancel.clone(),
+            join_handle,
+        });
+        let chat_app = app.handle().clone();
+        let chat =
+            tokio::spawn(async move { super::super::auto_sync::before_chat(&chat_app).await });
+        tokio::time::timeout(Duration::from_secs(2), cancel.cancelled())
+            .await
+            .unwrap();
+        assert!(
+            !chat.is_finished(),
+            "chat cannot start before accepted sync writes drain"
+        );
+        let sync_app = app.handle().clone();
+        let next_sync =
+            tokio::spawn(async move { super::super::auto_sync::admit_sync(&sync_app).await });
+        tokio::task::yield_now().await;
+        assert!(!next_sync.is_finished());
+        drain.notify_one();
+        let guard = tokio::time::timeout(Duration::from_secs(2), chat)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(app.state::<SyncState>().session.lock().await.is_none());
+        assert!(
+            !next_sync.is_finished(),
+            "hold admission through generation creation"
+        );
+        drop(guard);
+        assert!(tokio::time::timeout(Duration::from_secs(2), next_sync)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_some());
     }
 
     async fn websocket_pair() -> (SyncWebSocket, TestServerWebSocket) {

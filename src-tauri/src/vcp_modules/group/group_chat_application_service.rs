@@ -130,6 +130,7 @@ async fn run_group_speaker_turn<R: Runtime>(
         return Ok(GroupSpeakerOutcome::Cancelled);
     }
     let app_handle = params.app_handle;
+    let sync_admission = crate::vcp_modules::sync::auto_sync::before_chat(app_handle).await?;
     let db_pool = params.db_pool;
     let group_config_inner = params.group_config;
     let active_member_configs_inner = params.active_member_configs;
@@ -246,6 +247,7 @@ async fn run_group_speaker_turn<R: Runtime>(
         Some(&agent_name),
     )
     .await?;
+    drop(sync_admission);
 
     // 发射 thinking 事件，让前端为当前接力的 Agent 创建思考占位消息
     crate::vcp_modules::vcp_client::deliver_request_event(

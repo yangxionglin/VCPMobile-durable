@@ -160,6 +160,8 @@ pub(crate) async fn process_prepared_agent_chat_message(
         return Ok(json!({ "status": "cancelled", "messageId": thinking_id }));
     }
 
+    let sync_admission = crate::vcp_modules::sync::auto_sync::before_chat(&app_handle).await?;
+
     // 1. 读取 Agent 配置
     let agent_config =
         read_agent_config_internal(&app_handle, &agent_state, &agent_id, Some(true)).await?;
@@ -237,6 +239,7 @@ pub(crate) async fn process_prepared_agent_chat_message(
         Some(&agent_config.name),
     )
     .await?;
+    drop(sync_admission);
 
     // A separate lease per operation also releases on cancellation of this future.
     // Acquisition reports native failure through the shared notification channel.

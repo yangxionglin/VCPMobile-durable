@@ -30,6 +30,9 @@ pub fn run() {
             app.manage(app.handle().clone());
             app.manage(LifecycleState::new());
             app.manage(ActiveRequests::default());
+            if cfg!(target_os = "ios") {
+                app.manage(vcp_modules::sync::auto_sync::AutoSync::default());
+            }
             app.manage(ActiveGroupTurns::new(&app.state::<LifecycleState>()));
             app.manage(ContextSanitizer::default());
             app.manage(vcp_modules::chat::voice_service::VoiceServiceState::default());
