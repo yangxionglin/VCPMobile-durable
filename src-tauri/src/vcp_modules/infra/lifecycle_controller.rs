@@ -161,8 +161,8 @@ async fn reconcile_ios_foreground_services(app: &AppHandle, is_foreground: bool)
     let settings = app.state::<SettingsState>();
     let _runtime_guard = settings.lock_runtime_reconcile().await;
     super::lifecycle_reconciler::reconcile_distributed_node(app, false).await;
-    // Manual Sync is never restarted by foreground restoration. Chat reattaches
-    // through its existing output owner; it is not reissued from lifecycle.
+    crate::vcp_modules::sync::auto_sync::request(app);
+    // Auto sync waits for active generation recovery and coalesces requests.
 }
 
 #[cfg(not(target_os = "ios"))]

@@ -1,3 +1,4 @@
+pub(crate) mod auto_sync;
 pub mod sync_dto;
 pub mod sync_error;
 pub mod sync_executor;

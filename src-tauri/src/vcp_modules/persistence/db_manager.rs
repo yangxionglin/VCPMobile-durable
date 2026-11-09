@@ -1353,6 +1353,7 @@ mod tests {
         expected.push(103);
         expected.push(104);
         expected.push(105);
+        expected.push(106);
         assert_eq!(versions, expected);
         let voice_column: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agents') WHERE name = 'voice_config')",
@@ -1370,6 +1371,7 @@ mod tests {
             "messages",
             "topics",
             "active_generations",
+            "mobile_job_outbox",
             "render_cache",
             "current_share",
             "config_domains",

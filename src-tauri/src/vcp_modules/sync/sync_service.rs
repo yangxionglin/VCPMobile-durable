@@ -3381,7 +3381,15 @@ async fn finish_sync_session(handle: &AppHandle, session_id: u64, outcome: &Resu
                 "SYNC_STOP_FAILED"
             },
         );
+    } else {
+        drop(status);
     }
+    // run_sync_session's Result describes shutdown, not successful sync.
+    let completed = matches!(
+        state.connection_status.read().await.as_str(),
+        "completed" | "completed_with_warnings"
+    );
+    super::auto_sync::session_finished(handle, session_id, outcome.is_ok() && completed).await;
 }
 
 fn emit_sync_interruption(handle: &AppHandle, session_id: u64, code: &str) {

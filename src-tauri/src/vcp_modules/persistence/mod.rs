@@ -4,3 +4,5 @@ pub mod db_manager;
 mod db_write;
 pub mod db_write_queue;
 pub mod message_repository;
+#[cfg(not(target_os = "android"))]
+pub(crate) mod mobile_job_repository;

@@ -74,6 +74,7 @@ pub fn run() {
                 if let Err(e) = bootstrap(&handle).await {
                     log::error!("[VCPCore] Bootstrap failed: {}", e);
                 } else {
+                    vcp_modules::sync::auto_sync::install(&handle);
                     // 在核心引导成功后，安全地执行自动系统维护 (此时 DbState 保证已由 handle.manage 托管)
                     let h_maintenance = handle.clone();
                     tauri::async_runtime::spawn(async move {

@@ -31,8 +31,15 @@ use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::settings_manager::{ChatEndpointMode, Settings};
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 
+#[cfg(not(target_os = "android"))]
+mod durable_transport;
 mod request_body;
 use request_body::PreparedBody;
+
+#[cfg(not(target_os = "android"))]
+pub(crate) async fn cleanup_mobile_jobs<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    durable_transport::cleanup(app).await
+}
 
 #[cfg(target_os = "android")]
 const HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -700,16 +707,22 @@ pub(crate) fn retain_request_terminal<R: Runtime>(
 /// Only the durable owner can acknowledge a helper result. Delivery to a
 /// WebView is deliberately unrelated to this resource handoff.
 pub(crate) async fn release_committed_helper<R: Runtime>(app: &AppHandle<R>, key: &MessageKey) {
+    #[cfg(not(target_os = "android"))]
+    durable_transport::settle(app, key, true).await;
     settle_helper_handoff(app, key, true).await;
 }
 
 pub(crate) async fn discard_request_helper<R: Runtime>(app: &AppHandle<R>, key: &MessageKey) {
+    #[cfg(not(target_os = "android"))]
+    durable_transport::settle(app, key, false).await;
     settle_helper_handoff(app, key, false).await;
 }
 
 /// Called after a deletion transaction commits, including when the main
 /// process has restarted and no local request lease exists anymore.
 pub(crate) async fn discard_deleted_generation<R: Runtime>(app: &AppHandle<R>, key: &MessageKey) {
+    #[cfg(not(target_os = "android"))]
+    durable_transport::settle(app, key, false).await;
     if let Some(requests) = app.try_state::<ActiveRequests>() {
         if let Some(request) = requests.0.get(key).map(|entry| entry.value().clone()) {
             request.output.settle_terminal(true);
@@ -1587,6 +1600,22 @@ pub(crate) async fn perform_vcp_request_registered<R: Runtime>(
                 }),
             );
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    if cfg!(target_os = "ios") {
+        let key = message_key_from_context(&context, &message_id)?;
+        let job = durable_transport::prepare(
+            app,
+            &key,
+            &final_url,
+            &payload.vcp_api_key,
+            request_body,
+            is_stream,
+        )
+        .await?;
+        drop(preparation_permit);
+        return durable_transport::run(job, message_id, context, cancellation_token, output).await;
     }
 
     let prepared_body = request_body::prepare(
@@ -3716,6 +3745,14 @@ async fn recover_active_generation<R: Runtime>(
     output.send(event);
     if stop_requested {
         _recovery_cancellation_token.cancel();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    if cfg!(target_os = "ios") {
+        if let Some(job) = crate::vcp_modules::persistence::mobile_job_repository::pending(&db, &key).await? {
+            return durable_transport::recover(&app, &key, job, stream_channel,
+                _recovery_cancellation_token.clone(), agent_id).await;
+        }
     }
 
     #[cfg(target_os = "android")]
