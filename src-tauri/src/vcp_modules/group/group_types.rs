@@ -55,6 +55,8 @@ pub enum GroupChatMode {
     NaturalRandom,
     #[serde(rename = "invite_only")]
     InviteOnly,
+    #[serde(rename = "coordinator")]
+    Coordinator,
     #[serde(rename = "jev")]
     Jev,
 }
@@ -65,6 +67,7 @@ impl GroupChatMode {
             Self::Sequential => "sequential",
             Self::NaturalRandom => "naturerandom",
             Self::InviteOnly => "invite_only",
+            Self::Coordinator => "coordinator",
             Self::Jev => "jev",
         }
     }
@@ -82,6 +85,7 @@ impl<'de> Deserialize<'de> for GroupChatMode {
         Ok(match value.as_str() {
             Some("naturerandom") => Self::NaturalRandom,
             Some("invite_only") => Self::InviteOnly,
+            Some("coordinator") => Self::Coordinator,
             Some("jev") => Self::Jev,
             _ => Self::default(),
         })
@@ -122,6 +126,7 @@ fn default_tag_match_mode() -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct GroupLocalSettings {
     pub chat_mode: GroupChatMode,
+    pub coordinator_agent_id: String,
     pub mode_settings: GroupModeSettings,
     pub enable_context_message_window: bool,
     pub context_message_window_size: u32,
@@ -131,6 +136,7 @@ impl Default for GroupLocalSettings {
     fn default() -> Self {
         Self {
             chat_mode: GroupChatMode::default(),
+            coordinator_agent_id: String::new(),
             mode_settings: GroupModeSettings::default(),
             enable_context_message_window: false,
             context_message_window_size: 100,
@@ -158,6 +164,11 @@ impl<'de> Deserialize<'de> for GroupLocalSettings {
         let defaults = Self::default();
         let mut settings = Self {
             chat_mode: local_field(&value, "chatMode", defaults.chat_mode),
+            coordinator_agent_id: local_field(
+                &value,
+                "coordinatorAgentId",
+                defaults.coordinator_agent_id,
+            ),
             mode_settings: local_field(&value, "modeSettings", defaults.mode_settings),
             enable_context_message_window: local_field(
                 &value,
@@ -540,7 +551,7 @@ pub struct GroupListItem {
     pub name: String,
     pub avatar_calculated_color: Option<String>,
     pub members: Vec<String>,
-    /// 本机发言模式 (sequential, naturerandom, invite_only, jev)。
+    /// 本机发言模式 (sequential, naturerandom, invite_only, coordinator, jev)。
     /// 前端邀约横条/@选择器的模式判定以列表快照为准，缺此字段会导致
     /// invite_only 群在重启后永远识别不到（血训：曾被快照 DTO 丢弃）。
     #[serde(default)]

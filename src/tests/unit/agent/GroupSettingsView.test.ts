@@ -121,6 +121,25 @@ describe('GroupSettingsView editing and return saving', () => {
     expect(changes()).toHaveLength(0);
   });
 
+  it('saves the selected coordinator with the local chat mode only', async () => {
+    persisted.mode = 'coordinator';
+    const view = await open();
+    await chooseMode('统筹接话');
+    const row = view.findAll('button.settings-row').find(button => button.text().includes('统筹成员'))!;
+    await row.trigger('click');
+    const overlay = useOverlayStore();
+    overlay.contextMenuConfig!.actions.find(action => action.label === 'Luna')!.handler();
+    overlay.closeContextMenu();
+    await nextTick();
+    expect(row.text()).toContain('Luna');
+    await view.get('button[aria-label="返回并保存群组设置"]').trigger('click');
+    await flushPromises();
+    expect(changes()).toEqual([
+      ['update_group_config', { groupId: 'g1', updates: { chatMode: 'coordinator', coordinatorAgentId: 'a2' } }],
+    ]);
+    expect(useAssistantStore().groups[0].mode).toBe('coordinator');
+  });
+
   it.each([
     { fieldTop: 380, fieldBottom: 480, expectedScroll: 80 },
     { fieldTop: 260, fieldBottom: 360, expectedScroll: 0 },

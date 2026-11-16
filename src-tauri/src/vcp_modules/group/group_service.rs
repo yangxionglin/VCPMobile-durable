@@ -375,7 +375,11 @@ pub fn parse_group_local_settings_backup(
 fn is_local_settings_field(field: &str) -> bool {
     matches!(
         field,
-        "chatMode" | "modeSettings" | "enableContextMessageWindow" | "contextMessageWindowSize"
+        "chatMode"
+            | "coordinatorAgentId"
+            | "modeSettings"
+            | "enableContextMessageWindow"
+            | "contextMessageWindowSize"
     )
 }
 

@@ -562,6 +562,7 @@ const modeOptions = [
   { value: "sequential", code: "SEQ", label: "顺序发言", shortLabel: "顺序发言", desc: "成员按设定次序依次回复" },
   { value: "naturerandom", code: "RND", label: "自然随机", shortLabel: "自然随机", desc: "根据 @提及、标签和随机机会选择成员" },
   { value: "invite_only", code: "INV", label: "邀请发言", shortLabel: "邀请发言", desc: "点击成员或发送 @名字，邀请其回复" },
+  { value: "coordinator", code: "COORD", label: "统筹接话", shortLabel: "统筹接话", desc: "普通消息由统筹成员回复，@成员时由被点名的成员回复" },
   { value: "jev", code: "JEV", label: "JEV 智能群聊", shortLabel: "JEV 智控", desc: "根据话题选择成员，讨论结束后自动停下" },
 ] satisfies { value: GroupMode; code: string; label: string; shortLabel: string; desc: string }[];
 
@@ -586,6 +587,8 @@ const rosterHint = computed(() => {
       return "点击成员编辑触发标签";
     case "jev":
       return "点击成员配置发言风格";
+    case "coordinator":
+      return "在下方选择统筹成员";
     default:
       return "点击成员或发送 @名字 呼出";
   }
@@ -608,6 +611,12 @@ const filteredAvailableMembers = computed(() => {
 const selectedMembers = computed(() => (groupConfig.value?.members ?? []).map(id =>
   availableMembers.value.find(agent => agent.id === id) ?? { id, name: id, model: "", available: false },
 ));
+const coordinatorLabel = computed(() => {
+  const id = groupConfig.value?.coordinatorAgentId;
+  if (!id) return "首位成员";
+  const member = selectedMembers.value.find(agent => agent.id === id);
+  return member?.available ? member.name : "成员不可用";
+});
 const orderedMembers = computed(() => {
   const group = groupConfig.value;
   if (!group) return [];
@@ -663,6 +672,28 @@ const openTagSelection = (event: MouseEvent) => {
     },
   }));
   overlayStore.openContextMenu(actions, "标签匹配");
+  selectionMenu = overlayStore.contextMenuConfig;
+};
+
+const openCoordinatorSelection = (event: MouseEvent) => {
+  const group = groupConfig.value;
+  if (disabled.value || !group) return;
+  const epoch = editorEpoch;
+  const groupId = group.id;
+  (event.currentTarget as HTMLElement).focus({ preventScroll: true });
+  const options = [
+    { id: "", name: "首位成员" },
+    ...selectedMembers.value.filter(member => member.available),
+  ];
+  const actions: OverlayActionItem[] = options.map(option => ({
+    label: option.name,
+    selected: (group.coordinatorAgentId ?? "") === option.id,
+    handler: () => {
+      if (disabled.value || !isOpenEditorCurrent(epoch, groupId) || !groupConfig.value) return;
+      groupConfig.value.coordinatorAgentId = option.id;
+    },
+  }));
+  overlayStore.openContextMenu(actions, "统筹成员");
   selectionMenu = overlayStore.contextMenuConfig;
 };
 
@@ -895,6 +926,11 @@ watch([() => props.isOpen, () => props.id], ([isOpen, id]) => updateEditor(isOpe
             <div v-if="effectiveMode === 'naturerandom'" class="group-mode-extension">
               <SettingsRow title="标签匹配" :value="tagModeOptions.find(option => option.value === groupConfig?.tagMatchMode)?.label"
                 description="自然模式减少引用历史消息造成的重复回应。" clickable :disabled="controlsDisabled" aria-haspopup="dialog" @click="openTagSelection" />
+            </div>
+
+            <div v-else-if="effectiveMode === 'coordinator'" class="group-mode-extension">
+              <SettingsRow title="统筹成员" :value="coordinatorLabel" clickable :disabled="controlsDisabled"
+                aria-haspopup="dialog" @click="openCoordinatorSelection" />
             </div>
 
             <div v-else-if="effectiveMode === 'jev'" class="group-mode-extension flex flex-col gap-3">
@@ -1242,10 +1278,10 @@ watch([() => props.isOpen, () => props.id], ([isOpen, id]) => updateEditor(isOpe
   outline: none;
 }
 
-/* 2. 四宫格模式选择器 */
+/* 2. 群聊模式选择器 */
 .group-mode-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
   gap: 6px;
   padding: 4px;
   border: 1px solid var(--border-color);

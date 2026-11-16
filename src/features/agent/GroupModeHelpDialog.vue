@@ -6,7 +6,7 @@ import { useModalHistory } from '../../core/composables/useModalHistory';
  * 群聊模式帮助说明弹窗。
  *
  * 入口：群组设置「群聊模式」区块标题右侧的问号按钮。
- * 内容覆盖四种发言模式及必要的使用说明。
+ * 内容覆盖发言模式及必要的使用说明。
  */
 const props = defineProps<{
   modelValue: boolean;
@@ -45,6 +45,10 @@ const modes = [
   {
     label: '邀请发言',
     text: '点击成员或发送 @名字 即可邀请发言，其他成员不会自动回复。',
+  },
+  {
+    label: '统筹接话',
+    text: '普通消息由统筹成员回复，默认是群里的首位成员。明确 @成员 时，由被点名的成员回复。',
   },
   {
     label: 'JEV 智能群聊',

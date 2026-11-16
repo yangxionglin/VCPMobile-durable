@@ -10,7 +10,8 @@ use crate::vcp_modules::group_types::{GroupConfig, JevFallbackPolicy, JevModeSet
 use rand::Rng;
 use regex::Regex;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 pub(crate) struct GroupMemberHistoryStats {
     pub speech_count: i64,
@@ -30,6 +31,89 @@ pub(crate) fn determine_sequential_speakers(
             .unwrap_or(usize::MAX)
     });
     speakers
+}
+
+pub(crate) fn determine_coordinator_speakers(
+    members: &[AgentConfig],
+    group: &GroupConfig,
+    user_text: &str,
+) -> Result<Vec<AgentConfig>, String> {
+    static FENCED_CODE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?s)\x60{3}.*?\x60{3}").expect("fenced-code regex"));
+    static INLINE_CODE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\x60[^\x60\n]*\x60").expect("inline-code regex"));
+    static ROLE_SEPARATOR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\s+[·・•]\s+").expect("role-name separator regex"));
+    let without_fences = FENCED_CODE.replace_all(user_text, "");
+    let text = INLINE_CODE.replace_all(&without_fences, "");
+
+    let mut aliases: BTreeMap<&str, Vec<(usize, bool)>> = BTreeMap::new();
+    for (index, member) in members.iter().enumerate() {
+        let name = member.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        aliases.entry(name).or_default().push((index, true));
+        let short_name = ROLE_SEPARATOR.split(name).next().unwrap_or(name);
+        if short_name != name {
+            aliases.entry(short_name).or_default().push((index, false));
+        }
+    }
+
+    let mut selected = BTreeSet::new();
+    let mut previous = None;
+    for (at, ch) in text.char_indices() {
+        let eligible = matches!(ch, '@' | '＠')
+            && !previous
+                .is_some_and(|p: char| p.is_ascii_alphanumeric() || matches!(p, '_' | '@' | '＠'));
+        previous = Some(ch);
+        if !eligible {
+            continue;
+        }
+        let tail = &text[at + ch.len_utf8()..];
+        let matched = aliases
+            .iter()
+            .filter(|(alias, _)| {
+                tail.strip_prefix(**alias).is_some_and(|suffix| {
+                    suffix.chars().next().is_none_or(|next| {
+                        next.is_whitespace() || "，,。.!！？?、:：；;（）()".contains(next)
+                    })
+                })
+            })
+            .max_by_key(|(alias, _)| alias.len());
+        if let Some((alias, candidates)) = matched {
+            let prefer_exact = candidates.iter().any(|(_, exact)| *exact);
+            let mut matches = candidates
+                .iter()
+                .filter(|(_, exact)| !prefer_exact || *exact);
+            let member = matches.next().filter(|_| matches.next().is_none());
+            let (index, _) = member.ok_or_else(|| {
+                format!(
+                    "群成员称呼“{alias}”匹配多位成员，请使用不重名的完整显示名，或调整重名角色卡。"
+                )
+            })?;
+            selected.insert(*index);
+        }
+    }
+
+    if !selected.is_empty() {
+        return Ok(selected
+            .into_iter()
+            .map(|index| members[index].clone())
+            .collect());
+    }
+
+    let configured = &group.local_settings.coordinator_agent_id;
+    let coordinator_id = if configured.is_empty() {
+        group.members.first()
+    } else {
+        Some(configured)
+    };
+    let coordinator = members
+        .iter()
+        .find(|member| Some(&member.id) == coordinator_id)
+        .ok_or("统筹成员不可用，请检查群组设置中的统筹成员及其角色卡。")?;
+    Ok(vec![coordinator.clone()])
 }
 
 pub(crate) fn build_jev_request(
@@ -553,6 +637,53 @@ pub fn determine_naturerandom_speakers(
     });
 
     speakers
+}
+
+#[cfg(test)]
+mod coordinator_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn coordinator_routing_matches_desktop_mentions() {
+        let group: GroupConfig = serde_json::from_value(json!({
+            "id": "group",
+            "members": ["producer", "director", "editor"],
+            "chatMode": "coordinator",
+            "coordinatorAgentId": "director"
+        }))
+        .unwrap();
+        let members: Vec<AgentConfig> = serde_json::from_value(json!([
+            {"id": "producer", "name": "顾衡 · 制片"},
+            {"id": "director", "name": "小姜"},
+            {"id": "editor", "name": "顾衡 · 剪辑"}
+        ]))
+        .unwrap();
+        let speakers = |text| {
+            determine_coordinator_speakers(&members, &group, text)
+                .map(|agents| agents.into_iter().map(|agent| agent.id).collect::<Vec<_>>())
+        };
+        assert_eq!(speakers("继续。").unwrap(), ["director"]);
+        assert_eq!(
+            speakers("例子 `@顾衡` 和 ```\n@顾衡\n```").unwrap(),
+            ["director"]
+        );
+        assert_eq!(
+            speakers("＠顾衡 · 剪辑 和 @顾衡 · 制片，再请 @顾衡 · 剪辑").unwrap(),
+            ["producer", "editor"]
+        );
+        assert!(speakers("请@顾衡，回复")
+            .unwrap_err()
+            .contains("匹配多位成员"));
+        assert!(
+            determine_coordinator_speakers(&members[..1], &group, "继续")
+                .unwrap_err()
+                .contains("统筹成员不可用")
+        );
+        let raw = serde_json::to_string(&group.local_settings).unwrap();
+        let restored = crate::vcp_modules::group_types::parse_group_local_settings(Some(&raw));
+        assert_eq!(restored, group.local_settings);
+    }
 }
 
 #[cfg(test)]

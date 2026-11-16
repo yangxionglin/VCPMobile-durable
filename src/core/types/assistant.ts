@@ -46,7 +46,7 @@ export interface AgentListItemDto {
   avatarCalculatedColor: string | null;
 }
 
-export type GroupMode = "sequential" | "naturerandom" | "invite_only" | "jev";
+export type GroupMode = "sequential" | "naturerandom" | "invite_only" | "coordinator" | "jev";
 
 export interface JevModeSettings {
   navigatorPrompt: string;
@@ -68,6 +68,7 @@ export interface GroupModeSettings {
 
 export interface GroupLocalSettings {
   chatMode: GroupMode;
+  coordinatorAgentId?: string;
   modeSettings: GroupModeSettings;
   enableContextMessageWindow: boolean;
   contextMessageWindowSize: number;

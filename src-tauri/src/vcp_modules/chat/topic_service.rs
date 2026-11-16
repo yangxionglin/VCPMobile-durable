@@ -5,6 +5,8 @@ use super::chat_focus::DeleteScope;
 use super::chat_navigation::observe_target_deletion;
 use super::voice_service::VoiceCallState;
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::group::group_chat_application_service::load_active_group_members;
+use crate::vcp_modules::group_speaking_policy::determine_coordinator_speakers;
 use crate::vcp_modules::group_types::GroupChatMode;
 use crate::vcp_modules::infra::vcp_http_endpoint::ChatRequestPurpose;
 use crate::vcp_modules::settings_manager::SettingsState;
@@ -880,6 +882,11 @@ pub async fn regenerate_topic_response(
             .await?;
             match group_config.effective_mode() {
                 GroupChatMode::Sequential | GroupChatMode::NaturalRandom => {}
+                GroupChatMode::Coordinator => {
+                    let members =
+                        load_active_group_members(&app_handle, &agent_state, &group_config).await;
+                    determine_coordinator_speakers(&members, &group_config, &chat_msg.content)?;
+                }
                 GroupChatMode::InviteOnly => {
                     return Err("邀请发言群组不能使用自动重新生成，请直接邀请成员发言".to_string())
                 }

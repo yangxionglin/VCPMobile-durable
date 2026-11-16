@@ -210,7 +210,7 @@ export const useAssistantStore = defineStore("assistant", () => {
       // a concurrent sync. Send only the fields this editor actually changed.
       const editableFields = [
         "name", "members", "memberTags", "groupPrompt", "invitePrompt",
-        "useUnifiedModel", "unifiedModel", "tagMatchMode", "chatMode",
+        "useUnifiedModel", "unifiedModel", "tagMatchMode", "chatMode", "coordinatorAgentId",
         "modeSettings", "enableContextMessageWindow", "contextMessageWindowSize",
       ] as const;
       const updates = baseline ? Object.fromEntries(editableFields

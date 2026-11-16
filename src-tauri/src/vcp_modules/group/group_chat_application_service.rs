@@ -2,6 +2,7 @@
 // 职责: 1. 读取配置 2. 保存消息 3. 决策发言者 4. 组装上下文 5. 执行 AI 调用 6. 发射事件
 
 use crate::vcp_modules::agent_service::{read_agent_config_internal, AgentConfigState};
+use crate::vcp_modules::agent_types::AgentConfig;
 #[cfg(target_os = "ios")]
 use crate::vcp_modules::chat::ios_reply_task::ReplyTask;
 use crate::vcp_modules::chat::voice_service::VoiceReplyPolicy;
@@ -13,11 +14,11 @@ use crate::vcp_modules::group::group_session::{
 use crate::vcp_modules::group_context_assembler::assemble_group_context;
 use crate::vcp_modules::group_service::{read_group_config, GroupManagerState};
 use crate::vcp_modules::group_speaking_policy::{
-    append_jev_history, build_jev_request, determine_naturerandom_speakers,
-    determine_sequential_speakers, fallback_jev_decision, parse_jev_decision,
-    GroupMemberHistoryStats,
+    append_jev_history, build_jev_request, determine_coordinator_speakers,
+    determine_naturerandom_speakers, determine_sequential_speakers, fallback_jev_decision,
+    parse_jev_decision, GroupMemberHistoryStats,
 };
-use crate::vcp_modules::group_types::GroupChatMode;
+use crate::vcp_modules::group_types::{GroupChatMode, GroupConfig};
 use crate::vcp_modules::infra::vcp_http_endpoint::ChatRequestPurpose;
 use crate::vcp_modules::message_service;
 use crate::vcp_modules::settings_manager::{read_config, SettingsState};
@@ -428,6 +429,22 @@ pub async fn internal_process_group_chat_message(
     .await
 }
 
+pub(crate) async fn load_active_group_members(
+    app: &AppHandle,
+    agent_state: &AgentConfigState,
+    group: &GroupConfig,
+) -> Vec<AgentConfig> {
+    let mut active_members = Vec::new();
+    for member_id in &group.members {
+        if let Ok(config) =
+            read_agent_config_internal(app, agent_state, member_id, Some(false)).await
+        {
+            active_members.push(config);
+        }
+    }
+    active_members
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_prepared_group_chat_message(
     app_handle: AppHandle,
@@ -461,14 +478,8 @@ pub(crate) async fn process_prepared_group_chat_message(
         read_group_config(app_handle.clone(), group_state.clone(), group_id.clone()).await?;
 
     // 2. 加载成员配置
-    let mut active_member_configs = Vec::new();
-    for member_id in &group_config.members {
-        if let Ok(cfg) =
-            read_agent_config_internal(&app_handle, &agent_state, member_id, Some(false)).await
-        {
-            active_member_configs.push(cfg);
-        }
-    }
+    let active_member_configs =
+        load_active_group_members(&app_handle, &agent_state, &group_config).await;
 
     // 3. 异步追加用户消息 (重新生成时设为 false)
     if append_user_msg {
@@ -539,6 +550,11 @@ pub(crate) async fn process_prepared_group_chat_message(
         GroupChatMode::InviteOnly => {
             return Ok(json!({"status":"no_ai_response", "reason":"invite_only"}));
         }
+        GroupChatMode::Coordinator => determine_coordinator_speakers(
+            &active_member_configs,
+            &group_config,
+            &user_message.content,
+        )?,
     };
 
     if speakers.is_empty() {
@@ -1788,14 +1804,8 @@ pub async fn invite_group_member_to_speak(
     }
 
     // 全部成员配置供群上下文组装使用
-    let mut active_member_configs = Vec::new();
-    for member_id in &group_config.members {
-        if let Ok(cfg) =
-            read_agent_config_internal(&app_handle, &agent_state, member_id, Some(false)).await
-        {
-            active_member_configs.push(cfg);
-        }
-    }
+    let active_member_configs =
+        load_active_group_members(&app_handle, &agent_state, &group_config).await;
 
     // 轻量全量历史（含附件提取文本），与接力链路一致
     let mut full_history_for_context = message_service::load_chat_text_history_for_context(
