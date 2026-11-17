@@ -85,7 +85,15 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/voice-venv"
           source "$RUNNER_TEMP/voice-venv/bin/activate"
           python -m pip install --disable-pip-version-check -r src-tauri/runtime-assets/voice/requirements-compile.txt
-          python src-tauri/runtime-assets/voice/build_runtime.py ios --cache-dir "$RUNNER_TEMP/voice-cache"
+          ort_source="$RUNNER_TEMP/voice-cache/onnxruntime"
+          ort_commit="$(python -c 'import json; print(json.load(open("src-tauri/runtime-assets/voice/runtime.lock.json"))["ortCommit"])')"
+          # Fetch the locked upstream commit retained in NXP's public mirror.
+          # build_runtime.py verifies its exact Git identity and clean worktree.
+          git clone --sparse --filter=blob:none --no-checkout --depth=1 https://github.com/nxp-imx/onnxruntime-imx.git "$ort_source"
+          git -C "$ort_source" fetch --filter=blob:none --depth=1 origin "$ort_commit"
+          git -C "$ort_source" sparse-checkout set cmake include objectivec java onnxruntime/core onnxruntime/contrib_ops onnxruntime/lora tools/ci_build tools/python orttraining/orttraining/training_ops
+          git -C "$ort_source" checkout --detach "$ort_commit"
+          python src-tauri/runtime-assets/voice/build_runtime.py ios --cache-dir "$RUNNER_TEMP/voice-cache" --source-dir "$ort_source"
       - name: Generate the Xcode project
         run: pnpm tauri ios init --ci --skip-targets-install
       - name: Check the Apple project and archive tools
