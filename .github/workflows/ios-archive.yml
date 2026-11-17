@@ -29,7 +29,7 @@ concurrency:
 jobs:
   device-archive:
     runs-on: macos-26-intel
-    timeout-minutes: 90
+    timeout-minutes: 150
     outputs:
       artifact_id: ${{ steps.artifacts.outputs.artifact-id }}
     defaults:
