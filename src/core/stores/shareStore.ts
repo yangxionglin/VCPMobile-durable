@@ -57,9 +57,20 @@ export const useShareStore = defineStore('share', () => {
     if (!current.value || !['ready', 'prepared', 'draft', 'failed'].includes(current.value.state)) return;
     if (!dismissedShare || !isCurrent(dismissedShare)) selectorOpen.value = true;
   };
-  const notify = (error: unknown) => useNotificationStore().addNotification({
-    type: 'error', title: '分享处理失败', message: error instanceof Error ? error.message : String(error), toastOnly: false,
-  });
+  const notify = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('share_container_unavailable:')) {
+      useNotificationStore().addNotification({
+        id: 'share_container_unavailable', oncePerWebview: true,
+        type: 'warning', title: '分享扩展不可用',
+        message: '当前签名无法访问分享扩展的 App Group，请检查主应用与分享扩展的签名。', toastOnly: false,
+      });
+      return;
+    }
+    useNotificationStore().addNotification({
+      type: 'error', title: '分享处理失败', message, toastOnly: false,
+    });
+  };
   const apply = (value: CurrentShare | null): boolean => {
     if (value && current.value && value.generation < current.value.generation) return false;
     if (value && current.value && isCurrent(value)) {

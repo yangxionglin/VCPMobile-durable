@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{watch, RwLock};
-use tokio::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
-use super::vcp_ws_activity::{self, Heartbeat, HeartbeatAction, Retry, SocketEvent};
+use super::vcp_ws_activity::{
+    self, Heartbeat, HeartbeatAction, Retry, SocketEvent, HANDSHAKE_TIMEOUT,
+};
 use super::vcp_ws_endpoint::{compile_log_connection, endpoint_log_label};
 
 type ConnectionIntent = (u64, Option<Url>);
@@ -269,7 +270,7 @@ async fn start_vcp_info_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
             }
             // Only idle parks an unfinished dial. A foreground event reuses it.
             _ = vcp_ws_activity::until_idle(&mut activity_rx) => continue,
-            res = tokio::time::timeout(Duration::from_secs(5), connect_fut) => {
+            res = tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_fut) => {
                 match res {
                     Ok(Ok((ws_stream, _))) => {
                         ws_stream_opt = Some(ws_stream);
@@ -294,7 +295,7 @@ async fn start_vcp_info_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                         {
                             *CURRENT_INFO_STATUS.write().await = "error".to_string();
                         }
-                        log::error!("[VCPInfo] Connection timed out after 5 seconds.");
+                        log::error!("[VCPInfo] Connection timed out after 30 seconds.");
                         emit_info_event(
                             &app_handle,
                             serde_json::json!({

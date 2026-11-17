@@ -8,7 +8,8 @@ use tokio::time::{sleep, sleep_until, Instant};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
 const HEARTBEAT: Duration = Duration::from_secs(15);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy)]
 pub(super) struct WsActivity {
@@ -134,12 +135,18 @@ impl Retry {
         activity: &mut watch::Receiver<WsActivity>,
     ) {
         if activity.borrow().maintain() {
+            let ceiling = if activity.borrow().foreground {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_secs(60)
+            };
+            self.delay = self.delay.min(ceiling);
             tokio::select! {
                 biased;
                 _ = endpoint.changed() => {},
                 _ = activity.changed() => {},
                 _ = sleep(self.delay) => {
-                    self.delay = (self.delay * 2).min(Duration::from_secs(60));
+                    self.delay = (self.delay * 2).min(ceiling);
                     return;
                 }
             }
@@ -403,7 +410,7 @@ mod tests {
         let (_send, mut endpoint) = watch::channel(());
         let mut retry = Retry::default();
         assert!(retry.disconnected(true));
-        for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
+        for seconds in [1, 2, 4, 8, 10, 10, 10, 10] {
             assert!(!retry.disconnected(false));
             let start = Instant::now();
             retry.wait(&mut endpoint, &mut activity).await;
@@ -423,5 +430,26 @@ mod tests {
         activity.borrow_and_update();
         policy.network_available();
         assert!(!activity.has_changed().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_chat_retains_backoff_and_resume_retries_immediately() {
+        let policy = WsActivityPolicy::new(false);
+        let _chat = policy.acquire_chat();
+        let mut activity = policy.0.subscribe();
+        let (_sender, mut endpoint) = watch::channel(());
+        let mut retry = Retry::default();
+        for seconds in [1, 2, 4, 8, 16, 32, 60] {
+            let started = Instant::now();
+            retry.wait(&mut endpoint, &mut activity).await;
+            assert_eq!(started.elapsed(), Duration::from_secs(seconds));
+        }
+        let started = Instant::now();
+        tokio::join!(retry.wait(&mut endpoint, &mut activity), async {
+            tokio::task::yield_now().await;
+            policy.set_foreground(true);
+        });
+        assert_eq!(started, Instant::now());
+        assert_eq!(retry.delay, Duration::from_secs(1));
     }
 }

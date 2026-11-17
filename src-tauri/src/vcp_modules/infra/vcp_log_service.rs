@@ -12,7 +12,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
-use super::vcp_ws_activity::{self, Heartbeat, HeartbeatAction, Retry, SocketEvent};
+use super::vcp_ws_activity::{
+    self, Heartbeat, HeartbeatAction, Retry, SocketEvent, HANDSHAKE_TIMEOUT,
+};
 use super::vcp_ws_endpoint::{compile_log_connection, endpoint_log_label, log_connection_attempts};
 
 type ConnectionIntent = (u64, Option<Url>);
@@ -380,7 +382,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                 }
                 // Resuming an in-flight handshake reuses it; only idle parks dialing.
                 _ = vcp_ws_activity::until_idle(&mut activity_rx) => continue 'listener,
-                res = tokio::time::timeout(Duration::from_secs(5), connect_fut) => {
+                res = tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_fut) => {
                     match res {
                         Ok(Ok((ws_stream, _))) => {
                             ws_stream_opt = Some(ws_stream);
@@ -399,12 +401,12 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                         }
                         Err(_) => {
                             log::warn!(
-                                "[VCPLog] Connection timed out (5s) for trial {} ({})",
+                                "[VCPLog] Connection timed out (30s) for trial {} ({})",
                                 i + 1,
                                 endpoint_log_label(trial_url)
                             );
                             connection_error = Some(tokio_tungstenite::tungstenite::Error::Io(
-                                std::io::Error::new(std::io::ErrorKind::TimedOut, "Connection timed out (5s)")
+                                std::io::Error::new(std::io::ErrorKind::TimedOut, "Connection timed out (30s)")
                             ));
                         }
                     }
@@ -610,7 +612,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                         "status": "error",
                         "tool_name": "VCPLog 连接失败",
                         "content": format!(
-                            "❌ 连接失败: {}\n\n提示：\n1. 请检查桌面端 VCP 是否已开启且 VCPLog 服务正常。\n2. 检查 VCP API 地址和 Key 配置是否正确。",
+                            "连接失败，正在自动重试：{}\n公网响应较慢时请保持前台等待。若持续失败，请检查电脑服务、手机网络及 WebSocket 地址和 Key。",
                             last_error
                         ),
                         "source": "VCPLog"
@@ -666,6 +668,8 @@ mod tests {
         let (pong_tx, mut pong_rx) = mpsc::channel(2);
         let (stalled_tx, mut stalled_rx) = mpsc::channel(1);
         let peer_control = commands.clone();
+        let handshake_delay = Arc::new(std::sync::atomic::AtomicU64::new(6000));
+        let peer_delay = handshake_delay.clone();
         let server = tokio::spawn(async move {
             let mut sockets = tokio::task::JoinSet::new();
             loop {
@@ -675,7 +679,9 @@ mod tests {
                 let pongs = pong_tx.clone();
                 let stalled = stalled_tx.clone();
                 let mut commands = peer_control.subscribe();
+                let delay = Duration::from_millis(peer_delay.load(Ordering::Relaxed));
                 sockets.spawn(async move {
+                    tokio::time::sleep(delay).await;
                     let mut path = String::new();
                     #[expect(
                         clippy::result_large_err,
@@ -755,7 +761,7 @@ mod tests {
         });
 
         async fn next_socket(receiver: &mut mpsc::Receiver<(String, bool)>) -> (String, bool) {
-            tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+            tokio::time::timeout(Duration::from_secs(12), receiver.recv())
                 .await
                 .unwrap()
                 .unwrap()
@@ -827,8 +833,11 @@ mod tests {
         let last_chat = turns.try_acquire(topic.clone()).unwrap();
         assert!(turns.try_acquire(topic).is_err());
         last_chat.start_session("continue", true).unwrap();
+        // Both real handshakes take longer than the former five-second limit.
+        // They must finish on the original connections without restart loops.
         expect_pair(&mut socket_rx, true).await;
         expect_status("connected", "connected").await;
+        handshake_delay.store(0, Ordering::Relaxed);
 
         // The remaining chat keeps both reconnect loops running.
         drop(first_chat);
@@ -893,10 +902,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(healthy_ping, "/VCPlog/VCP_Key=runtime-test");
-        let replacement = tokio::time::timeout(Duration::from_secs(9), socket_rx.recv())
-            .await
-            .expect("Info did not reconnect after its resume probe timed out")
-            .unwrap();
+        let replacement = tokio::time::timeout(
+            vcp_ws_activity::PROBE_TIMEOUT + Duration::from_secs(4),
+            socket_rx.recv(),
+        )
+        .await
+        .expect("Info did not reconnect after its resume probe timed out")
+        .unwrap();
         assert_eq!(replacement, ("/vcpinfo/VCP_Key=runtime-test".into(), true));
         assert!(resume_started.elapsed() >= Duration::from_secs(5));
         release_stalled.send(()).unwrap();

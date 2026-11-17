@@ -41,6 +41,31 @@ beforeEach(() => {
 afterEach(() => disposePinia(pinia));
 
 describe('one current share', () => {
+  it('reports a missing App Group once while allowing future share reads', async () => {
+    const { useNotificationStore } = await vi.importActual<typeof import('../../../core/stores/notification')>(
+      '../../../core/stores/notification',
+    );
+    const notifications = useNotificationStore();
+    context.notices.mockImplementation(notifications.addNotification);
+    let signed = false;
+    mockInvoke('read_current_share', () => {
+      if (!signed) throw new Error('share_container_unavailable: App Group signing is missing');
+      return share(1, 'prepared');
+    });
+    const store = useShareStore();
+    await store.refresh().catch(store.notify);
+    notifications.clearHistory();
+    await store.refresh().catch(store.notify);
+    expect(notifications.historyList).toHaveLength(0);
+    signed = true;
+    await store.refresh();
+    expect(store.current?.deliveryId).toBe('share-1');
+    store.notify(new Error('file import failed'));
+    expect(notifications.historyList).toHaveLength(1);
+    expect(notifications.historyList[0]?.title).toBe('分享处理失败');
+    context.notices.mockReset();
+  });
+
   it('keeps a dismissed selector closed when preparation finishes and resumes on a fresh entry', async () => {
     const prepared = { ...share(1, 'prepared'), text: 'retained shared text', revision: 1 };
     const pending = deferred<CurrentShare>();
