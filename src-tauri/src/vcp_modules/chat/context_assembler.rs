@@ -4,6 +4,8 @@ use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::{json, Value};
 
+mod tool_result_context;
+
 // =================================================================
 // vcp_modules/chat/context_assembler.rs - 上下文级联装配中枢
 // =================================================================
@@ -154,8 +156,13 @@ pub fn assemble_history_for_vcp(
             combined_text.push_str(&format!("[{}的发言]:\n", speaker_name));
         }
 
-        // 3. 核心消息正文
-        combined_text.push_str(&msg.content);
+        // Match desktop group chat: condense long receipts only in the
+        // outgoing history, before adding attachments and Tavern rules.
+        if is_group && msg.role == "assistant" {
+            combined_text.push_str(&tool_result_context::condense(&msg.content));
+        } else {
+            combined_text.push_str(&msg.content);
+        }
 
         let mut content_parts = Vec::new();
 
@@ -446,6 +453,41 @@ mod voice_policy_tests {
         assistant.content = format!("```text\n{block}```\n> 引用中的普通标签 [叹气]");
         let example = assemble_history_for_vcp(&[assistant.clone()], false, false);
         assert_eq!(example[0]["content"], assistant.content);
+    }
+
+    #[test]
+    fn group_context_condenses_only_long_assistant_receipts() {
+        let short_receipt = "<<<[ROLE_DIVIDE_USER]>>>\n简短回执\n<<<[END_ROLE_DIVIDE_USER]>>>";
+        let body = format!(
+            "- 工具名称: TestTool\n- 执行状态: ✅ SUCCESS\n{}",
+            "文".repeat(1500)
+        );
+        let long_receipt =
+            format!("<<<[ROLE_DIVIDE_USER]>>>\n{body}\n<<<[END_ROLE_DIVIDE_USER]>>>");
+        let raw = format!("历史正文\n{long_receipt}\n{short_receipt}\n结论");
+        let messages = [
+            ChatMessage {
+                role: "assistant".into(),
+                content: raw.clone(),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: raw.clone(),
+                ..Default::default()
+            },
+        ];
+
+        let group = assemble_history_for_vcp(&messages, true, false);
+        let condensed = format!(
+            "[AI的发言]:\n历史正文\n[TestTool SUCCESS；返回原文 {} 字已从上下文省略，需要时重新读取]\n{short_receipt}\n结论",
+            body.encode_utf16().count()
+        );
+        assert_eq!(group[0]["content"], condensed);
+        assert_eq!(group[1]["content"], format!("[User的发言]:\n{raw}"));
+        let private = assemble_history_for_vcp(&messages, false, false);
+        assert_eq!(private[0]["content"], raw);
+        assert_eq!(messages[0].content, raw);
     }
 }
 
