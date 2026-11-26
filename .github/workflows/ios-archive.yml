@@ -1,7 +1,9 @@
 name: iOS Device Archive
-run-name: iOS ${{ inputs.profile }} archive · ${{ github.ref_name }}
+run-name: iOS ${{ inputs.profile || 'release' }} archive · ${{ github.ref_name }}
 
 on:
+  push:
+    branches: [codex/vcpmobile-ios]
   workflow_dispatch:
     inputs:
       profile:
@@ -23,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-archive-${{ github.event_name }}-${{ github.ref }}-${{ inputs.profile }}
+  group: ios-archive-${{ github.ref }}-${{ inputs.profile || 'release' }}
   cancel-in-progress: true
 
 jobs:
@@ -36,7 +38,7 @@ jobs:
       run:
         shell: bash
     env:
-      IOS_ARCHIVE_PROFILE: ${{ inputs.profile }}
+      IOS_ARCHIVE_PROFILE: ${{ inputs.profile || 'release' }}
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
     steps:
@@ -106,7 +108,7 @@ jobs:
         id: artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ios-${{ inputs.profile }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: ios-${{ env.IOS_ARCHIVE_PROFILE }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ios-artifacts/
           if-no-files-found: error
           compression-level: 0

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { getVersion } from '@tauri-apps/api/app';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { iosArchiveBuild, iosArchivePage, useIosArchiveUpdate } from '../../../core/stores/iosArchiveUpdate';
 import { useUpdateStore } from '../../../core/stores/update';
 import { useNotificationStore } from '../../../core/stores/notification';
 import { isAndroid, isIOS, nativePlatform } from '../../../core/utils/platform';
@@ -15,6 +17,8 @@ const justCheckedNoUpdate = ref(false);
 
 const updateStore = useUpdateStore();
 const notificationStore = useNotificationStore();
+const iosBuild = isIOS ? iosArchiveBuild : null;
+const archive = useIosArchiveUpdate();
 
 onMounted(async () => {
   if (isAndroid) {
@@ -42,6 +46,13 @@ const onAutoCheckChange = (value: boolean) => {
 };
 
 const rowDescription = computed(() => {
+  if (iosBuild) {
+    const installed = '已安装定制构建 #' + iosBuild.number;
+    if (archive.checking) return installed + ' · 正在检查更新';
+    if (archive.failed) return installed + ' · 暂时无法查询 GitHub，可稍后重试';
+    if (archive.available) return installed + ' · 新构建 #' + archive.available.number + ' 可用，使用原签名覆盖安装';
+    return installed + (archive.checked ? ' · 暂无可用更新' : '');
+  }
   if (!isAndroid) {
     const version = currentVersion.value ? `当前版本: v${currentVersion.value} · ` : '';
     return version + (isIOS ? '在应用外自行签名安装更新' : '应用内更新仅适用于 Android');
@@ -67,6 +78,7 @@ const rowDescription = computed(() => {
 });
 
 const rowClickable = computed(() => {
+  if (iosBuild) return !!archive.available && !archive.failed;
   return (
     !isAndroid ||
     !!updateStore.info?.hasUpdate ||
@@ -77,6 +89,10 @@ const rowClickable = computed(() => {
 });
 
 const checkUpdate = async () => {
+  if (iosBuild) {
+    await archive.check(true);
+    return;
+  }
   if (!isAndroid) {
     openPrompt();
     return;
@@ -101,6 +117,15 @@ const checkUpdate = async () => {
 };
 
 const openPrompt = () => {
+  if (iosBuild) {
+    const release = archive.available;
+    if (release && release.expires > Date.now() && !archive.failed) {
+      void openUrl(iosArchivePage(release.id)).catch(() => notificationStore.addNotification({
+        type: 'error', title: '无法打开 GitHub 构建页面', message: '请稍后重试。', toastOnly: true,
+      }));
+    } else { void archive.check(true); }
+    return;
+  }
   if (!isAndroid) {
     notificationStore.addNotification({
       type: 'info',
@@ -129,13 +154,13 @@ const openPrompt = () => {
           size="sm"
           @click.stop="openPrompt"
         >
-          {{ updateStore.state === 'readyToInstall' ? '安装' : '查看' }}
+          {{ iosBuild ? '查看新版' : updateStore.state === 'readyToInstall' ? '安装' : '查看' }}
         </SettingsActionButton>
         <SettingsActionButton
           v-else
           variant="secondary"
           size="sm"
-          :loading="checking || updateStore.state === 'checking'"
+          :loading="archive.checking || checking || updateStore.state === 'checking'"
           @click.stop="checkUpdate"
         >
           检查更新
@@ -143,7 +168,8 @@ const openPrompt = () => {
       </template>
     </SettingsRow>
 
-    <SettingsRow v-if="isAndroid" title="自动检查更新" description="启动时检查新版本（24 小时内最多一次）">
+    <SettingsRow v-if="isAndroid || iosBuild" title="自动检查更新"
+      :description="iosBuild ? '打开或返回 App 时检查定制版，每天检查一次' : '启动时检查新版本（24 小时内最多一次）'">
       <template #action>
         <SettingsSwitch
           :model-value="updateStore.autoCheckEnabled"

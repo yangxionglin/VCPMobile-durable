@@ -2,7 +2,8 @@ import { watch, computed, onScopeDispose, ref } from 'vue';
 import { useAppLifecycleStore } from '../stores/appLifecycle';
 import { useUpdateDownloader } from './useUpdateDownloader';
 import { useUpdateStore } from '../stores/update';
-import { isAndroid } from '../utils/platform';
+import { iosArchiveBuild, useIosArchiveUpdate } from '../stores/iosArchiveUpdate';
+import { isAndroid, isIOS } from '../utils/platform';
 import { readLocalPreference, writeLocalPreference } from '../preferences/localPreference';
 
 const LAST_CHECK_KEY = 'vcp_last_update_check';
@@ -72,7 +73,15 @@ export function useAutoUpdate() {
     }
   };
 
-  if (isAndroid) {
+  if (isIOS && iosArchiveBuild) {
+    const archive = useIosArchiveUpdate();
+    watch(() => [lifecycleStore.state, lifecycleStore.isBackground, updateStore.autoCheckEnabled] as const,
+      ([state, background, enabled]) => {
+        if (checkTimer) clearTimeout(checkTimer);
+        checkTimer = state === 'READY' && !background && enabled
+          ? setTimeout(() => { void archive.check(false); }, 2000) : null;
+      }, { immediate: true });
+  } else if (isAndroid) {
     watch(
       () => lifecycleStore.state,
       (newState) => {

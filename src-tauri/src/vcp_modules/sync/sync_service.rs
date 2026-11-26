@@ -779,6 +779,7 @@ impl SyncCommandRouter {
 }
 
 pub struct SyncState {
+    desktop_group_support: Mutex<Option<DesktopGroupSupport>>,
     pub ws_sender: SyncCommandRouter,
     pub connection_status: Arc<RwLock<String>>,
     pub current_log_path: Arc<RwLock<Option<String>>>,
@@ -789,6 +790,13 @@ pub struct SyncState {
     session: AsyncMutex<Option<SyncSessionHandle>>,
     next_session_id: AtomicU64,
     current_session_id: AtomicU64,
+}
+
+struct DesktopGroupSupport {
+    endpoint: String,
+    group_send: bool,
+    agent_send: bool,
+    checked: std::time::Instant,
 }
 
 struct SyncSessionHandle {
@@ -1220,6 +1228,7 @@ struct SyncCompletionSummary {
 
 pub fn init_sync_service(_app_handle: AppHandle) -> SyncState {
     SyncState {
+        desktop_group_support: Mutex::new(None),
         ws_sender: SyncCommandRouter::default(),
         connection_status: Arc::new(RwLock::new(String::from("disconnected"))),
         current_log_path: Arc::new(RwLock::new(None)),
@@ -1236,6 +1245,7 @@ pub fn init_sync_service(_app_handle: AppHandle) -> SyncState {
 #[cfg(test)]
 pub(crate) fn test_sync_state(session_id: u64) -> SyncState {
     SyncState {
+        desktop_group_support: Mutex::new(None),
         ws_sender: SyncCommandRouter::default(),
         connection_status: Arc::new(RwLock::new(String::from("disconnected"))),
         current_log_path: Arc::new(RwLock::new(None)),
@@ -1349,27 +1359,37 @@ async fn request_desktop_sync_control(
     suffix: &'static str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let settings = read_config(handle.clone(), handle.state::<SettingsState>()).await?;
+    let config = build_sync_session_config(&settings, cfg!(any(target_os = "android", target_os = "ios")))
+        .map_err(|error| error.detail)?;
+    desktop_control(&config, suffix, body).await
+}
+
+const DESKTOP_ROUTE_MISSING: &str = "电脑端同步服务尚未提供此功能";
+
+async fn desktop_control(
+    config: &SyncSessionConfig,
+    suffix: &'static str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     static CLIENT: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
     let client = CLIENT
         .get_or_init(|| reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build())
         .as_ref()
         .map_err(|_| "无法初始化桌面连接".to_string())?;
-    let settings = read_config(handle.clone(), handle.state::<SettingsState>()).await?;
-    let config = build_sync_session_config(&settings, cfg!(any(target_os = "android", target_os = "ios")))
-        .map_err(|error| error.detail)?;
     let url = format!("{}/api/mobile-sync{suffix}", config.http_url);
     let request = match body {
         Some(value) => client.post(url).timeout(Duration::from_secs(30)).json(&value),
         None => client.get(url).timeout(Duration::from_secs(4)),
     };
     let mut response = request
-        .bearer_auth(config.sync_token)
+        .bearer_auth(&config.sync_token)
         .send()
         .await
         .map_err(|_| "暂时无法连接电脑端同步服务".to_string())?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
-        return Err("电脑端同步服务尚未提供此功能".to_string());
+        return Err(DESKTOP_ROUTE_MISSING.to_string());
     }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err("同步令牌校验未通过".to_string());
@@ -1389,8 +1409,26 @@ async fn request_desktop_sync_control(
     Ok(payload)
 }
 
+async fn desktop_revision(handle: &AppHandle, config: &SyncSessionConfig) -> Result<serde_json::Value, String> {
+    let payload = match desktop_control(config, "/revision", None).await {
+        Ok(payload) => payload,
+        Err(error) if error == DESKTOP_ROUTE_MISSING => serde_json::Value::Null,
+        Err(error) => return Err(error),
+    };
+    let state = handle.state::<SyncState>();
+    *state.desktop_group_support.lock().map_err(|_| "无法读取桌面版本信息")? = Some(DesktopGroupSupport {
+        endpoint: config.http_url.clone(),
+        group_send: payload["desktopGroupSend"].as_u64() == Some(1),
+        agent_send: payload["desktopAgentSend"].as_u64() == Some(1),
+        checked: std::time::Instant::now(),
+    });
+    Ok(payload)
+}
+
 pub(super) async fn read_desktop_config_revision(handle: &AppHandle) -> Option<String> {
-    let payload = request_desktop_sync_control(handle, "/revision", None).await.ok()?;
+    let settings = read_config(handle.clone(), handle.state::<SettingsState>()).await.ok()?;
+    let config = build_sync_session_config(&settings, cfg!(any(target_os = "android", target_os = "ios"))).ok()?;
+    let payload = desktop_revision(handle, &config).await.ok()?;
     let revision = payload["revision"].as_str()?;
     (revision.len() <= 80 && revision.contains(':')).then(|| revision.to_string())
 }
@@ -1428,26 +1466,70 @@ pub async fn create_continuation_topic(
 pub async fn route_desktop_continuation_message(
     handle: AppHandle,
     db: State<'_, DbState>,
-    group_id: String,
+    owner_id: String,
+    owner_type: String,
     topic_id: String,
     text: String,
     request_id: String,
     plain_text: bool,
 ) -> Result<bool, String> {
-    let managed = crate::vcp_modules::message_repository::is_project_continuation(
-        &db.pool, &group_id, &topic_id,
-    ).await?;
-    if !managed {
+    let group = owner_type == "group";
+    if !group && owner_type != "agent" {
         return Ok(false);
     }
-    if !plain_text {
-        return Err("项目接续在手机端支持发送新文字消息。附件和编辑重发请在电脑端操作。".to_string());
+    let managed = group && crate::vcp_modules::message_repository::is_project_continuation(
+        &db.pool, &owner_id, &topic_id,
+    ).await?;
+    let plain_text = plain_text && !text.trim().is_empty() && text.encode_utf16().take(8001).count() <= 8000;
+    if managed && !plain_text {
+        return Err("项目接续在手机端支持 1 至 8000 字的新文字消息。长文、附件和编辑重发请在电脑端操作。".to_string());
     }
-    let result = request_desktop_sync_control(&handle, "/continuation/send", Some(json!({
-        "groupId": group_id, "topicId": topic_id, "requestId": request_id, "text": text,
-    }))).await?;
+    if !managed && (!cfg!(target_os = "ios") || (!group && !plain_text)) {
+        return Ok(false);
+    }
+    let settings = read_config(handle.clone(), handle.state::<SettingsState>()).await?;
+    if !managed && (settings.sync.http_url.trim().is_empty() || settings.sync.token.trim().is_empty()) {
+        return Ok(false);
+    }
+    let config = build_sync_session_config(&settings, cfg!(any(target_os = "android", target_os = "ios")))
+        .map_err(|error| error.detail)?;
+    let state = handle.state::<SyncState>();
+    let cached = state.desktop_group_support.lock().map_err(|_| "无法读取桌面版本信息")?
+        .as_ref().filter(|entry| entry.endpoint == config.http_url && entry.checked.elapsed() < Duration::from_secs(45))
+        .map(|entry| if group { entry.group_send } else { entry.agent_send });
+    let supported = match cached {
+        Some(available) => available,
+        None => {
+            let revision = desktop_revision(&handle, &config).await?;
+            let capability = if group { "desktopGroupSend" } else { "desktopAgentSend" };
+            revision[capability].as_u64() == Some(1)
+        }
+    };
+    if !supported && !managed {
+        return Ok(false);
+    }
+    let mut message = json!({
+        "topicId": topic_id, "requestId": request_id,
+        "plainText": plain_text, "text": plain_text.then_some(text),
+    });
+    if group {
+        message["groupId"] = json!(owner_id);
+        if supported {
+            message["desktopGroup"] = json!(true);
+        }
+    } else {
+        message["agentId"] = json!(owner_id);
+        message["desktopAgent"] = json!(true);
+    }
+    let result = desktop_control(&config, "/continuation/send", Some(message)).await?;
     if result["success"].as_bool() != Some(true) {
         return Err("电脑尚未确认接收这条消息。".to_string());
+    }
+    if result["routed"].as_bool() == Some(false) {
+        if managed {
+            return Err("电脑端尚未识别这个项目接续话题。".to_string());
+        }
+        return Ok(false);
     }
     super::auto_sync::request(&handle);
     Ok(true)

@@ -12,6 +12,8 @@ import { useTopicStore } from "./topicListManager";
 import { useNotificationStore } from "./notification";
 import { useShareStore, type ShareIdentity } from "./shareStore";
 import { clearMessageCache } from "../utils/astRenderer";
+import { desktopSendRequestId, forgetDesktopSendRequest } from "../utils/desktopSendRequest";
+import { isIOS } from "../utils/platform";
 import { extractMentionedMemberIds } from "../utils/mention";
 import { triggerMessageHaptic } from "../utils/nativeHaptics";
 import { allowChatMutation } from "../../features/chat/chatMutationPolicy";
@@ -387,8 +389,6 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   /**
    * 发送消息
    */
-  let pendingDesktopText: { groupId: string; topicId: string; text: string; id: string } | null = null;
-
   const sendMessage = async (content: string, onCommitted?: () => void) => {
     if (isSubmitting.value) return;
     const key = captureLoadedConversation();
@@ -416,22 +416,23 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       if (!canCommitConversation(key) || editingMessage.value !== intentAtSend
         || shareStore.activeDraft?.deliveryId !== shareAtSend?.deliveryId) return;
 
-      if (key.ownerType === 'group' && key.topicId.startsWith('group_topic_')) {
-        const pending = pendingDesktopText?.groupId === key.ownerId && pendingDesktopText.topicId === key.topicId
-          && pendingDesktopText.text === content
-          ? pendingDesktopText
-          : { groupId: key.ownerId, topicId: key.topicId, text: content, id: crypto.randomUUID() };
-        pendingDesktopText = pending;
+      const plainText = !intentAtSend && !shareAtSend && currentStaged.length === 0 && content.length <= 8000;
+      const groupTopic = key.ownerType === 'group' && key.topicId.startsWith('group_topic_');
+      if (groupTopic || (isIOS && key.ownerType === 'agent' && plainText)) {
         try {
+          const requestId = plainText
+            ? await desktopSendRequestId(key.ownerType, key.ownerId, key.topicId, content)
+            : crypto.randomUUID();
+          if (!canCommitConversation(key) || editingMessage.value !== intentAtSend
+            || shareStore.activeDraft?.deliveryId !== shareAtSend?.deliveryId) return;
           const routed = await invoke<boolean>("route_desktop_continuation_message", {
-            groupId: key.ownerId, topicId: key.topicId, text: content, requestId: pending.id,
-            plainText: !intentAtSend && !shareAtSend && currentStaged.length === 0,
+            ownerType: key.ownerType, ownerId: key.ownerId, topicId: key.topicId, text: content, requestId, plainText,
           });
-          pendingDesktopText = null;
+          if (plainText) forgetDesktopSendRequest(key.ownerType, key.ownerId, key.topicId, requestId);
           if (routed) {
             committed();
             notificationStore.addNotification({
-              type: 'success', title: '已交给电脑处理', message: '回复会在同步后显示。', toastOnly: true,
+              type: 'success', title: '电脑已接收消息', message: '聊天记录会自动同步。', toastOnly: true,
             });
             return;
           }
@@ -439,7 +440,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             || shareStore.activeDraft?.deliveryId !== shareAtSend?.deliveryId) return;
         } catch (error) {
           notificationStore.addNotification({
-            type: 'error', title: '接续话题发送未完成', message: errorMessage(error), toastOnly: true,
+            type: 'error', title: '消息发送未完成', message: errorMessage(error), toastOnly: true,
           });
           return;
         }

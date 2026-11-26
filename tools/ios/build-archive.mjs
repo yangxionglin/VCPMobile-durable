@@ -19,6 +19,17 @@ const env = {
   CXX_aarch64_apple_ios: xcrun('--sdk', 'iphoneos', '--find', 'clang++'),
   AR_aarch64_apple_ios: xcrun('--find', 'ar'),
 };
+const releaseBranch = 'codex/vcpmobile-ios';
+delete env.VITE_VCP_IOS_ARCHIVE;
+if (profile === 'release' && process.env.GITHUB_REPOSITORY === 'yangxionglin/VCPMobile-durable'
+  && process.env.GITHUB_REF === 'refs/heads/' + releaseBranch
+  && ['push', 'workflow_dispatch'].includes(process.env.GITHUB_EVENT_NAME)
+  && process.env.GITHUB_WORKFLOW_REF === 'yangxionglin/VCPMobile-durable/.github/workflows/ios-archive.yml@refs/heads/' + releaseBranch) {
+  env.VITE_VCP_IOS_ARCHIVE = JSON.stringify({
+    branch: releaseBranch, sha: process.env.GITHUB_SHA,
+    number: Number(process.env.GITHUB_RUN_NUMBER), repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
+  });
+}
 for (const key of [
   'LIBSQLITE3_SYS_USE_PKG_CONFIG', 'ZSTD_SYS_USE_PKG_CONFIG', 'RING_PREGENERATE_ASM',
   'APPLE_DEVELOPMENT_TEAM', 'IOS_CERTIFICATE', 'IOS_CERTIFICATE_PASSWORD', 'IOS_MOBILE_PROVISION',
