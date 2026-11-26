@@ -1,11 +1,11 @@
 //! Coalesced foreground sync. Model recovery always finishes before sync writes.
-use super::sync_service::{start_manual_sync, SyncState};
+use super::sync_service::{read_desktop_config_revision, start_manual_sync, SyncState};
 use crate::vcp_modules::db_manager::DbState;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Default)]
@@ -66,14 +66,28 @@ pub(crate) fn install(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AutoSync>();
         let mut handled = 0;
+        let mut synced_config_revision = None;
         let mut earliest = tokio::time::Instant::now() + Duration::from_secs(5);
         request(&app);
         loop {
             let epoch = state.requested.load(Ordering::SeqCst);
-            if epoch == handled
-                || !crate::vcp_modules::lifecycle_manager::is_app_in_foreground(&app)
-            {
+            if !crate::vcp_modules::lifecycle_manager::is_app_in_foreground(&app) {
                 state.wake.notified().await;
+                continue;
+            }
+            if epoch == handled {
+                tokio::select! {
+                    _ = state.wake.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                        if crate::vcp_modules::lifecycle_manager::is_app_in_foreground(&app) {
+                            if let Some(revision) = read_desktop_config_revision(&app).await {
+                                if synced_config_revision.as_ref() != Some(&revision) {
+                                    request(&app);
+                                }
+                            }
+                        }
+                    }
+                }
                 continue;
             }
             tokio::time::sleep_until(earliest).await;
@@ -99,6 +113,9 @@ pub(crate) fn install(app: &AppHandle) {
             if !crate::vcp_modules::lifecycle_manager::is_app_in_foreground(&app) {
                 continue;
             }
+            // Capture before syncing so a desktop write during the session
+            // is still detectable on the next lightweight check.
+            let config_revision = read_desktop_config_revision(&app).await;
             let epoch = state.requested.load(Ordering::SeqCst);
             earliest = tokio::time::Instant::now() + Duration::from_secs(60);
             match start_manual_sync(app.clone(), app.state::<SyncState>()).await {
@@ -106,6 +123,12 @@ pub(crate) fn install(app: &AppHandle) {
                     if let Some(success) = state.finished.lock().await.remove(&id) {
                         if success {
                             handled = epoch;
+                            if config_revision.is_some() {
+                                if config_revision != synced_config_revision {
+                                    let _ = app.emit("vcp-auto-sync-applied", ());
+                                }
+                                synced_config_revision = config_revision;
+                            }
                         }
                         break;
                     }

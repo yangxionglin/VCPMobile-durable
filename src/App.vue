@@ -20,6 +20,7 @@ import { useVoiceCallStore } from "./features/chat/voice/voiceCallStore";
 import { useAppLifecycle } from "./core/composables/useAppLifecycle";
 import { retainNativeInsetsBridge } from "./core/composables/useKeyboardInsets";
 import { useWebViewResume } from "./core/composables/useWebViewResume";
+import { useDataReload } from "./core/composables/useDataReload";
 import { useShareStore } from "./core/stores/shareStore";
 import {
   useVcpCliStore,
@@ -51,6 +52,7 @@ const layoutStore = useLayoutStore();
 const overlayStore = useOverlayStore();
 const sessionStore = useChatSessionStore();
 const voiceCallStore = useVoiceCallStore();
+const { performFullReload } = useDataReload();
 const { processPayload } = useNotificationProcessor();
 const leftSidebarPersistent = window.matchMedia("(min-width: 1024px)");
 const rightSidebarPersistent = window.matchMedia("(min-width: 1280px)");
@@ -378,6 +380,7 @@ useWebViewResume({
 
 // 用于取消监听的清理函数
 let unlistenLog: (() => void) | null = null;
+let unlistenAutoSync: (() => void) | null = null;
 let stopRouterHistory: (() => void) | null = null;
 
 // --- Root Exit Handler (Double-Tap to Exit with Toast) ---
@@ -518,6 +521,19 @@ onMounted(async () => {
   }
   unlistenLog = stopLogListener;
 
+  if (isIOS) {
+    const stopAutoSync = await listen("vcp-auto-sync-applied", () => {
+      if (!appUnmounted && lifecycleStore.state === 'READY') {
+        void performFullReload().catch(error => console.warn('[AutoSync] Data reload failed:', error));
+      }
+    });
+    if (appUnmounted) {
+      stopAutoSync();
+      return;
+    }
+    unlistenAutoSync = stopAutoSync;
+  }
+
   // 2. 异步执行重度核心资源加载 (启动引导)
   await bootstrapApp();
   if (appUnmounted) return;
@@ -543,6 +559,7 @@ onUnmounted(() => {
   stopNotificationReadyWatch?.();
   stopNotificationReadyWatch = null;
   if (unlistenLog) unlistenLog();
+  unlistenAutoSync?.();
   stopRouterHistory?.();
   window.removeEventListener("vcp-exit-requested", handleExitRequest);
   window.removeEventListener("vcp-hardware-back", handleExitRequest);

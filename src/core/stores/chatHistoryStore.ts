@@ -387,6 +387,8 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   /**
    * 发送消息
    */
+  let pendingDesktopText: { groupId: string; topicId: string; text: string; id: string } | null = null;
+
   const sendMessage = async (content: string, onCommitted?: () => void) => {
     if (isSubmitting.value) return;
     const key = captureLoadedConversation();
@@ -413,6 +415,35 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       }
       if (!canCommitConversation(key) || editingMessage.value !== intentAtSend
         || shareStore.activeDraft?.deliveryId !== shareAtSend?.deliveryId) return;
+
+      if (key.ownerType === 'group' && key.topicId.startsWith('group_topic_')) {
+        const pending = pendingDesktopText?.groupId === key.ownerId && pendingDesktopText.topicId === key.topicId
+          && pendingDesktopText.text === content
+          ? pendingDesktopText
+          : { groupId: key.ownerId, topicId: key.topicId, text: content, id: crypto.randomUUID() };
+        pendingDesktopText = pending;
+        try {
+          const routed = await invoke<boolean>("route_desktop_continuation_message", {
+            groupId: key.ownerId, topicId: key.topicId, text: content, requestId: pending.id,
+            plainText: !intentAtSend && !shareAtSend && currentStaged.length === 0,
+          });
+          pendingDesktopText = null;
+          if (routed) {
+            committed();
+            notificationStore.addNotification({
+              type: 'success', title: '已交给电脑处理', message: '回复会在同步后显示。', toastOnly: true,
+            });
+            return;
+          }
+          if (!canCommitConversation(key) || editingMessage.value !== intentAtSend
+            || shareStore.activeDraft?.deliveryId !== shareAtSend?.deliveryId) return;
+        } catch (error) {
+          notificationStore.addNotification({
+            type: 'error', title: '接续话题发送未完成', message: errorMessage(error), toastOnly: true,
+          });
+          return;
+        }
+      }
 
       if (editingMessage.value) {
         const intent = editingMessage.value;

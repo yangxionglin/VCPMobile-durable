@@ -14,6 +14,24 @@ use tokio::sync::mpsc;
 pub const RENDERER_SCHEMA_VERSION: i64 = 3;
 const MAX_SAFE_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
+pub(crate) async fn is_project_continuation(
+    pool: &sqlx::SqlitePool,
+    group_id: &str,
+    topic_id: &str,
+) -> Result<bool, String> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM messages
+          WHERE owner_type = 'group' AND owner_id = ? AND topic_id = ?
+          AND msg_id = ? AND role = 'assistant' AND deleted_at IS NULL)",
+    )
+    .bind(group_id)
+    .bind(topic_id)
+    .bind(format!("project-handoff-{topic_id}"))
+    .fetch_one(pool)
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// Resolve a stored message's author from its complete identity. A group
 /// assistant message uses its actual speaker, never the currently selected UI owner.
 pub(crate) async fn read_narration_author(

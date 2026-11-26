@@ -124,8 +124,10 @@ macro_rules! app_command_handler {
             prepare_current_share, read_current_share, receive_android_share, update_share_draft,
         };
         use crate::vcp_modules::sync_service::{
-            clear_old_sync_logs, list_sync_log_files, prepare_sync_log_share_file,
-            read_sync_log_file, release_sync_log_share_file, start_manual_sync, stop_sync,
+            clear_old_sync_logs, create_continuation_topic, list_sync_log_files,
+            prepare_sync_log_share_file, preview_continuation_topic,
+            read_sync_log_file, release_sync_log_share_file, route_desktop_continuation_message,
+            start_manual_sync, stop_sync,
         };
         use crate::vcp_modules::taskcenter::{
             delegation_cancel, delegation_list, task_agent_list, task_create, task_delete,
@@ -404,10 +406,13 @@ macro_rules! app_command_handler {
                 save_boot_trace,
                 // ── 同步（sync_service）──
                 clear_old_sync_logs,
+                create_continuation_topic,
                 list_sync_log_files,
                 prepare_sync_log_share_file,
+                preview_continuation_topic,
                 read_sync_log_file,
                 release_sync_log_share_file,
+                route_desktop_continuation_message,
                 start_manual_sync,
                 stop_sync,
                 // ── 分布式（distributed；reconcile 寄居 lifecycle_manager）──

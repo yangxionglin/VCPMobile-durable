@@ -66,7 +66,7 @@ const handleCancel = () => {
           </div>
 
           <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">{{ title }}</h3>
-          <p class="text-sm text-gray-600 dark:text-gray-400 mb-6 leading-relaxed whitespace-pre-wrap text-left">{{ message }}</p>
+          <p class="mb-6 max-h-[50dvh] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words text-left text-sm leading-relaxed text-gray-600 dark:text-gray-400">{{ message }}</p>
 
           <div class="flex justify-end gap-3">
             <button v-if="!onlyConfirm" @click="handleCancel"

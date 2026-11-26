@@ -1,20 +1,74 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useTopicStore } from "../../core/stores/topicListManager";
 import { useChatSessionStore } from "../../core/stores/chatSessionStore";
 import { useAssistantStore } from "../../core/stores/assistant";
 import { useLayoutStore } from "../../core/stores/layout";
 import { useNotificationStore } from "../../core/stores/notification";
+import { useOverlayStore } from "../../core/stores/overlay";
 
 const topicStore = useTopicStore();
 const sessionStore = useChatSessionStore();
 const assistantStore = useAssistantStore();
 const layoutStore = useLayoutStore();
 const notificationStore = useNotificationStore();
+const overlayStore = useOverlayStore();
 const router = useRouter();
 
 const isCreating = ref(false);
+const isContinuing = ref(false);
+const continuationSource = computed(() => {
+  const key = sessionStore.currentConversationKey;
+  return key?.ownerType === 'group' && key.topicId.startsWith('group_topic_') ? key : null;
+});
+let pendingHandoff: {
+  groupId: string;
+  topicId: string;
+  digest: string;
+  text: string;
+  requestId: string;
+} | null = null;
+
+async function handleContinuation() {
+  const source = continuationSource.value;
+  if (!source || isContinuing.value) return;
+  isContinuing.value = true;
+  try {
+    const prior = pendingHandoff?.groupId === source.ownerId && pendingHandoff.topicId === source.topicId
+      ? pendingHandoff : null;
+    const preview = prior ?? {
+      ...await invoke<{ digest: string; text: string }>("preview_continuation_topic", {
+        groupId: source.ownerId, topicId: source.topicId,
+      }),
+      groupId: source.ownerId,
+      topicId: source.topicId,
+      requestId: crypto.randomUUID(),
+    };
+    if (continuationSource.value?.epoch !== source.epoch) return;
+    const confirmed = await overlayStore.showConfirm({
+      title: "从当前话题新建接续话题",
+      message: preview.text,
+    });
+    if (!confirmed || continuationSource.value?.epoch !== source.epoch) return;
+    pendingHandoff = preview;
+    const result = await invoke<{ topicName: string }>("create_continuation_topic", {
+      groupId: preview.groupId, topicId: preview.topicId, digest: preview.digest, requestId: preview.requestId,
+    });
+    pendingHandoff = null;
+    notificationStore.addNotification({
+      type: 'success', title: '接续话题已创建',
+      message: `${result.topicName}，同步完成后可在话题列表打开。`, toastOnly: true,
+    });
+  } catch (error) {
+    const message = String(error);
+    if (message.includes('项目状态已变化')) pendingHandoff = null;
+    notificationStore.addNotification({ type: 'error', title: '创建接续话题未完成', message, toastOnly: true });
+  } finally {
+    isContinuing.value = false;
+  }
+}
 
 const currentItemId = computed(
   () =>
@@ -92,5 +146,14 @@ const handleCreateTopic = async () => {
       <line x1="5" y1="12" x2="19" y2="12"></line>
     </svg>
     新建话题
+  </button>
+  <button
+    v-if="continuationSource"
+    type="button"
+    class="mt-2 min-h-11 w-full rounded-xl border border-black/10 text-sm font-medium dark:border-white/10 disabled:opacity-40"
+    :disabled="isContinuing"
+    @click="handleContinuation"
+  >
+    {{ isContinuing ? '正在处理接续话题…' : '从当前话题新建接续话题' }}
   </button>
 </template>

@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
@@ -1342,6 +1342,115 @@ fn build_sync_session_config(
         sync_prerender_enabled: settings.sync.prerender_enabled,
         sync_log_level: settings.sync.log_level.clone(),
     })
+}
+
+async fn request_desktop_sync_control(
+    handle: &AppHandle,
+    suffix: &'static str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    let client = CLIENT
+        .get_or_init(|| reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build())
+        .as_ref()
+        .map_err(|_| "无法初始化桌面连接".to_string())?;
+    let settings = read_config(handle.clone(), handle.state::<SettingsState>()).await?;
+    let config = build_sync_session_config(&settings, cfg!(any(target_os = "android", target_os = "ios")))
+        .map_err(|error| error.detail)?;
+    let url = format!("{}/api/mobile-sync{suffix}", config.http_url);
+    let request = match body {
+        Some(value) => client.post(url).timeout(Duration::from_secs(30)).json(&value),
+        None => client.get(url).timeout(Duration::from_secs(4)),
+    };
+    let mut response = request
+        .bearer_auth(config.sync_token)
+        .send()
+        .await
+        .map_err(|_| "暂时无法连接电脑端同步服务".to_string())?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err("电脑端同步服务尚未提供此功能".to_string());
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("同步令牌校验未通过".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "读取电脑端响应失败".to_string())? {
+        if bytes.len() + chunk.len() > 256 * 1024 {
+            return Err("电脑端响应超出大小限制".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| format!("电脑端同步服务返回无效响应（HTTP {}）", status.as_u16()))?;
+    if !status.is_success() {
+        return Err(payload["message"].as_str().unwrap_or("电脑端未能完成本次请求").to_string());
+    }
+    Ok(payload)
+}
+
+pub(super) async fn read_desktop_config_revision(handle: &AppHandle) -> Option<String> {
+    let payload = request_desktop_sync_control(handle, "/revision", None).await.ok()?;
+    let revision = payload["revision"].as_str()?;
+    (revision.len() <= 80 && revision.contains(':')).then(|| revision.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_continuation_topic(
+    handle: AppHandle,
+    group_id: String,
+    topic_id: String,
+) -> Result<serde_json::Value, String> {
+    request_desktop_sync_control(&handle, "/continuation/preview", Some(json!({
+        "groupId": group_id, "topicId": topic_id,
+    }))).await
+}
+
+#[tauri::command]
+pub async fn create_continuation_topic(
+    handle: AppHandle,
+    group_id: String,
+    topic_id: String,
+    digest: String,
+    request_id: String,
+) -> Result<serde_json::Value, String> {
+    let result = request_desktop_sync_control(&handle, "/continuation/create", Some(json!({
+        "groupId": group_id, "topicId": topic_id, "digest": digest, "requestId": request_id,
+    }))).await?;
+    if result["topicId"].as_str().filter(|id| !id.is_empty()).is_none() {
+        return Err("电脑端未返回接续话题编号".to_string());
+    }
+    super::auto_sync::request(&handle);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn route_desktop_continuation_message(
+    handle: AppHandle,
+    db: State<'_, DbState>,
+    group_id: String,
+    topic_id: String,
+    text: String,
+    request_id: String,
+    plain_text: bool,
+) -> Result<bool, String> {
+    let managed = crate::vcp_modules::message_repository::is_project_continuation(
+        &db.pool, &group_id, &topic_id,
+    ).await?;
+    if !managed {
+        return Ok(false);
+    }
+    if !plain_text {
+        return Err("项目接续在手机端支持发送新文字消息。附件和编辑重发请在电脑端操作。".to_string());
+    }
+    let result = request_desktop_sync_control(&handle, "/continuation/send", Some(json!({
+        "groupId": group_id, "topicId": topic_id, "requestId": request_id, "text": text,
+    }))).await?;
+    if result["success"].as_bool() != Some(true) {
+        return Err("电脑尚未确认接收这条消息。".to_string());
+    }
+    super::auto_sync::request(&handle);
+    Ok(true)
 }
 
 fn classify_connection_failure(err: &tokio_tungstenite::tungstenite::error::Error) -> &'static str {
