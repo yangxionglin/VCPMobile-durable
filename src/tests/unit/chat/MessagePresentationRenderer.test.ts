@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MessageRenderer from '@/features/chat/MessageRenderer.vue';
-import type { ChatMessage, StreamBlock } from '@/core/types/chat';
+import type { ChatMessage, ContentBlock, StreamBlock } from '@/core/types/chat';
 import { useChatSessionStore } from '@/core/stores/chatSessionStore';
 import { useChatStreamStore } from '@/core/stores/chatStreamStore';
 import { useChatPreferencesStore } from '@/features/chat/preferences/store';
@@ -46,6 +46,84 @@ function mountStreamRenderer(message: ChatMessage, pinia: Pinia) {
     },
   });
 }
+
+describe('completed tool process disclosure', () => {
+  const receipt = (tool: string, status: string): ContentBlock => ({
+    type: 'tool-result', tool_name: tool, status, details: [], footer: '',
+  });
+  const opener: ContentBlock = { type: 'role-divider', role: 'user', is_end: false };
+  const closer: ContentBlock = { type: 'role-divider', role: 'user', is_end: true };
+  const lead: ContentBlock = { type: 'markdown', content: '开始查阅' };
+  const answer: ContentBlock = { type: 'markdown', content: '最终答复' };
+  const middle: ContentBlock = { type: 'markdown', content: '已查阅，继续验证' };
+  const summary: ContentBlock = { type: 'tool-call-summary', items: [], raw_content: '' };
+
+  function mountHistory(blocks: ContentBlock[]) {
+    return mountStreamRenderer({
+      id: 'completed-tools', role: 'assistant', content: '', timestamp: 1, blocks,
+      shell: { isUser: false, displayName: 'Agent', avatarColor: '' },
+    }, createPinia());
+  }
+
+  it('keeps the lead and answer visible while mounting the tool process only on demand', async () => {
+    const wrapper = mountHistory([
+      lead, opener, receipt('Reader', 'SUCCESS'), closer,
+      middle, opener, receipt('Verifier', '❌ FAILED'), summary, closer, answer,
+    ]);
+    try {
+      const toggle = wrapper.get('.vcp-history-tool-process');
+      expect(toggle.attributes('aria-expanded')).toBe('false');
+      expect(toggle.text()).toContain('2 次工具调用');
+      expect(toggle.text()).toContain('1 个失败');
+      expect(wrapper.text()).toContain('开始查阅');
+      expect(wrapper.text()).toContain('最终答复');
+      expect(wrapper.text()).not.toContain('继续验证');
+      expect(wrapper.findAll('[data-strong-block="tool"]')).toHaveLength(0);
+      expect(wrapper.find('[data-strong-block="tool-summary"]').exists()).toBe(false);
+
+      await toggle.trigger('click');
+      expect(toggle.attributes('aria-expanded')).toBe('true');
+      expect(wrapper.text()).toContain('继续验证');
+      expect(wrapper.findAll('[data-strong-block="tool"]')).toHaveLength(2);
+      expect(wrapper.find('[data-strong-block="tool-summary"]').exists()).toBe(true);
+
+      await toggle.trigger('click');
+      expect(toggle.attributes('aria-expanded')).toBe('false');
+      expect(wrapper.findAll('[data-strong-block="tool"]')).toHaveLength(0);
+      expect(wrapper.emitted('historyDisclosure')).toHaveLength(2);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it('leaves a single adjacent call/result pair and named consultation replies out of the fold', () => {
+    const pair = mountHistory([
+      { type: 'tool-use', tool_name: 'Reader', content: '' }, receipt('Reader', 'SUCCESS'), answer,
+    ]);
+    const consultation = mountHistory([
+      receipt('Reader', 'SUCCESS'),
+      { type: 'tool-result', tool_name: 'AgentAssistant', status: 'SUCCESS', details: [{ key: '回复成员', value: '成员一' }], footer: '' },
+      receipt('Verifier', 'SUCCESS'),
+    ]);
+    try {
+      expect(pair.find('.vcp-history-tool-process').exists()).toBe(false);
+      expect(consultation.find('.vcp-history-tool-process').exists()).toBe(false);
+    } finally {
+      pair.unmount();
+      consultation.unmount();
+    }
+  });
+
+  it('opens a process with a result awaiting confirmation', () => {
+    const wrapper = mountHistory([receipt('Reader', 'SUCCESS'), receipt('Verifier', '⏳ PendingApproval'), answer]);
+    try {
+      expect(wrapper.get('.vcp-history-tool-process').attributes('aria-expanded')).toBe('true');
+      expect(wrapper.findAll('[data-strong-block="tool"]')).toHaveLength(2);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+});
 
 function installRunningAnimationMock(): () => void {
   const original = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');

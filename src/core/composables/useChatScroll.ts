@@ -102,12 +102,12 @@ export function useChatScroll(options: UseChatScrollOptions) {
     layoutFrameResolvers.clear();
   };
 
-  const captureViewportAnchor = (): ViewportAnchor | null => {
+  const captureViewportAnchor = (allowBottomAnchor = true): ViewportAnchor | null => {
     const list = messageListRef.value;
     if (!list) return null;
 
     const fallbackScrollTop = list.scrollTop;
-    const stickToBottom = !options.anchored?.value && isNearBottom(list);
+    const stickToBottom = allowBottomAnchor && !options.anchored?.value && isNearBottom(list);
     if (stickToBottom) return { stickToBottom: true, fallbackScrollTop };
 
     const listRect = list.getBoundingClientRect();
@@ -167,8 +167,9 @@ export function useChatScroll(options: UseChatScrollOptions) {
 
   const preserveViewportAcrossLayoutChange = async (
     change: () => void | Promise<void>,
+    allowBottomAnchor = true,
   ): Promise<void> => {
-    const anchor = captureViewportAnchor();
+    const anchor = captureViewportAnchor(allowBottomAnchor);
     const generation = ++layoutChangeGeneration;
     isLayoutChanging = true;
 

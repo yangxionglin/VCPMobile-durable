@@ -80,6 +80,10 @@ const {
 });
 watch(followingLatest, following => { historyStore.followingLatest = following; }, { immediate: true });
 
+function onHistoryDisclosure() {
+  void preserveViewportAcrossLayoutChange(nextTick, false);
+}
+
 const isPresentationMenuOpen = computed(
   () => overlayStore.contextMenuConfig?.title === "消息呈现",
 );
@@ -365,6 +369,7 @@ onUnmounted(() => {
           :agent-id="sessionStore.currentSelectedItem?.id"
           :is-background="lifecycleStore.isBackground"
           :data-message-id="msg.id"
+          @history-disclosure="onHistoryDisclosure"
         />
         <!-- 底部留白，避免最后一条消息被输入框遮挡 -->
         <div class="h-20"></div>

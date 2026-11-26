@@ -390,6 +390,27 @@ describe("useChatScroll streaming follow intent", () => {
 });
 
 describe("useChatScroll layout-change anchoring", () => {
+  it("preserves the reading position when a disclosure opens at the bottom", async () => {
+    const list = document.createElement("div");
+    let scrollHeight = 1000;
+    Object.defineProperties(list, {
+      scrollHeight: { get: () => scrollHeight },
+      clientHeight: { value: 100 },
+      scrollTop: { writable: true, value: 900 },
+    });
+    list.scrollTo = vi.fn();
+    const scroll = createLayoutScroll(list);
+    try {
+      await nextTick();
+      await scroll.preserveViewportAcrossLayoutChange(() => { scrollHeight = 1400; }, false);
+      expect(list.scrollTop).toBe(900);
+      expect(list.scrollTo).not.toHaveBeenCalled();
+      expect(scroll.followingLatest.value).toBe(false);
+    } finally {
+      scroll.dispose();
+    }
+  });
+
   it("keeps a near-bottom reader attached to the new bottom", async () => {
     const list = document.createElement("div");
     let scrollHeight = 1000;

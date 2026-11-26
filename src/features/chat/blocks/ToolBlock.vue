@@ -50,7 +50,7 @@ const props = withDefaults(
     defaultExpanded: false,
   }
 );
-const emit = defineEmits<{ contentMounted: [] }>();
+const emit = defineEmits<{ contentMounted: []; manualDisclosure: [expanded: boolean] }>();
 
 const isExpanded = ref(props.defaultExpanded);
 const hasExpanded = ref(props.defaultExpanded);
@@ -132,6 +132,7 @@ onUnmounted(() => {
 const toggleExpand = () => {
   hasManualExpansion = true;
   isExpanded.value = !isExpanded.value;
+  emit('manualDisclosure', isExpanded.value);
 };
 
 // 检测工具结果值是否为图片（HTTP URL 或 base64 data URI）

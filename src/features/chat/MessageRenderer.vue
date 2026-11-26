@@ -25,12 +25,13 @@ import {
   supportsStreamRevealMotion,
 } from "../../core/utils/streamTextFade";
 import { useMessageStyleInjector } from "../../core/composables/useMessageStyleInjector";
-import { Copy, Edit2, RotateCcw, Trash2, StopCircle, Square, Volume2 } from "@lucide/vue";
+import { ChevronRight, Copy, Edit2, RotateCcw, Trash2, StopCircle, Square, Volume2 } from "@lucide/vue";
 import { useBubbleNarration } from './voice/useBubbleNarration';
 import { useVoiceCallStore } from './voice/voiceCallStore';
 import { useMessageTailRenderer } from './composables/useMessageTailRenderer';
 import { separateMessageStyles, stableMessageStyles, standaloneStyleSource } from './utils/messageStyles';
 import { createMarkdownPresentation } from './utils/markdownPresentation';
+import { getHistoryToolProcess } from './utils/historyToolProcess';
 import { instantiateMermaidSvg, renderMermaidTemplate } from './utils/mermaidRenderer';
 import { allowChatMutation, chatMutationBlockReason } from "./chatMutationPolicy";
 import type { OverlayActionItem } from "../../core/types/overlay";
@@ -61,6 +62,7 @@ const props = defineProps<{
   depth?: number;
   isBackground?: boolean;
 }>();
+const emit = defineEmits<{ historyDisclosure: [] }>();
 
 const overlayStore = useOverlayStore();
 const notificationStore = useNotificationStore();
@@ -370,13 +372,28 @@ const stableBubbleProjection = computed(() => {
 
 const needsTailBubble = computed(() => showMessageTail.value && Boolean(props.message.tailBlock)
   && stableBubbleProjection.value.lastBlockIsBrk);
+const toolsOpenedDuringStream = new Set<string>();
 const messageBubbles = computed(() => {
   const { bubbles } = stableBubbleProjection.value;
-  if (needsTailBubble.value) {
-    return [...bubbles, { id: `${props.message.id}-bubble-${bubbles.length}`, blocks: [] }];
+  const canFold = props.message.role === 'assistant' && !isMessageInActiveStream.value && !showMessageTail.value;
+  const rendered = bubbles.map(bubble => {
+    const fold = canFold ? getHistoryToolProcess(bubble.blocks) : undefined;
+    const toolProcess = fold && {
+      ...fold,
+      key: getBlockKey(bubble.blocks[fold.start], fold.start, bubble.id),
+      initiallyExpanded: fold.waiting || (toolsOpenedDuringStream.size > 0
+        && bubble.blocks.slice(fold.start, fold.end + 1).some((block, offset) =>
+          toolsOpenedDuringStream.has(getBlockKey(block, fold.start + offset, bubble.id)))),
+    };
+    return { ...bubble, toolProcess };
+  });
+  if (needsTailBubble.value || !rendered.length) {
+    rendered.push({ id: `${props.message.id}-bubble-${rendered.length}`, blocks: [], toolProcess: undefined });
   }
-  return bubbles.length ? bubbles : [{ id: `${props.message.id}-bubble-0`, blocks: [] }];
+  return rendered;
 });
+type BubbleToolProcess = NonNullable<(typeof messageBubbles.value)[number]['toolProcess']>;
+const historyProcessExpansion = ref<Record<string, boolean>>({});
 
 // === Event Delegation ===
 const messageContentRef = ref<HTMLElement | null>(null);
@@ -498,7 +515,11 @@ const guidanceKey = (ordinal: number) => `${props.message.id}-voice-guidance-${o
 const tailGuidanceKey = computed(() => guidanceKey(
   props.message.blocks?.filter(block => block.type === "voice-guidance").length ?? 0,
 ));
-watch(() => props.message.id, () => { guidanceExpansion.value = {}; });
+watch(() => props.message.id, () => {
+  guidanceExpansion.value = {};
+  historyProcessExpansion.value = {};
+  toolsOpenedDuringStream.clear();
+});
 
 function getBlockKey(block: ContentBlock, index: number, bubbleId: string): string {
   const markdownKey = markdownPresentation.getKey(block);
@@ -516,9 +537,35 @@ function getBlockKey(block: ContentBlock, index: number, bubbleId: string): stri
   return `${bubbleId}-${block.type}-idx-${index}`;
 }
 
-function getStableBlockMemo(block: ContentBlock, index: number, bubbleId: string): unknown[] {
+function toolProcessExpanded(process: BubbleToolProcess): boolean {
+  return historyProcessExpansion.value[process.key] ?? process.initiallyExpanded;
+}
+
+function onToolDisclosure(key: string, expanded: boolean) {
+  if (!isMessageInActiveStream.value) {
+    emit('historyDisclosure');
+    return;
+  }
+  if (expanded) toolsOpenedDuringStream.add(key);
+  else toolsOpenedDuringStream.delete(key);
+}
+
+function toggleHistoryToolProcess(process: BubbleToolProcess) {
+  emit('historyDisclosure');
+  const expanded = !toolProcessExpanded(process);
+  historyProcessExpansion.value[process.key] = expanded;
+  // Opening the process can mount previously deferred diagrams and math.
+  if (expanded) void nextTick(() => renderHeavyContent());
+}
+
+function isWithinToolProcess(index: number, process: BubbleToolProcess | undefined): process is BubbleToolProcess {
+  return process !== undefined && index >= process.start && index <= process.end;
+}
+
+function getStableBlockMemo(block: ContentBlock, index: number, bubbleId: string, process?: BubbleToolProcess): unknown[] {
   const key = getBlockKey(block, index, bubbleId);
   const memo: unknown[] = [key, block, shouldRevealStableBlock(block)];
+  if (isWithinToolProcess(index, process)) memo.push(process, toolProcessExpanded(process));
   if (block.type === 'html-preview') memo.push(isStreaming.value);
   else if (block.type === 'thought') memo.push(isMessageInActiveStream.value);
   else if (block.type === 'tool-use' || block.type === 'jev-tool-use' || block.type === 'tool-result') {
@@ -1063,13 +1110,27 @@ onUnmounted(() => {
                 <div
                   v-for="(block, index) in bubble.blocks"
                   :key="getBlockKey(block, index, bubble.id)"
-                  v-memo="getStableBlockMemo(block, index, bubble.id)"
+                  v-memo="getStableBlockMemo(block, index, bubble.id, bubble.toolProcess)"
+                  v-show="!isWithinToolProcess(index, bubble.toolProcess) || index === bubble.toolProcess.start || toolProcessExpanded(bubble.toolProcess)"
                   data-message-render-region="stable"
                   :class="{ [STREAM_ELEMENT_REVEAL_CLASS]: shouldRevealStableBlock(block) }"
                   @animationend.self="finishStableBlockReveal($event, block)"
                   @animationcancel.self="finishStableBlockReveal($event, block)"
                 >
                   <!-- eslint-enable vue/valid-v-memo -->
+                  <button
+                    v-if="index === bubble.toolProcess?.start"
+                    type="button"
+                    class="vcp-history-tool-process flex items-center gap-2 min-h-11 w-full rounded-lg px-2 text-left text-xs"
+                    :aria-expanded="toolProcessExpanded(bubble.toolProcess)"
+                    data-longpress-native
+                    @click="toggleHistoryToolProcess(bubble.toolProcess)"
+                  >
+                    <ChevronRight :size="16" class="shrink-0" aria-hidden="true" />
+                    <span>已处理 · {{ bubble.toolProcess.count }} 次工具调用</span>
+                    <span v-if="bubble.toolProcess.failed" class="vcp-history-tool-failure">{{ bubble.toolProcess.failed }} 个失败</span>
+                  </button>
+                  <template v-if="!isWithinToolProcess(index, bubble.toolProcess) || toolProcessExpanded(bubble.toolProcess)">
                   <DiaryBlock
                     v-if="block.type === 'diary' || block.type === 'diary-update'"
                     :block="block"
@@ -1090,6 +1151,7 @@ onUnmounted(() => {
                     :content="block.content"
                     :block="block"
                     :default-expanded="expandToolsByDefault"
+                    @manual-disclosure="onToolDisclosure(getBlockKey(block, index, bubble.id), $event)"
                     @content-mounted="renderHeavyContent()"
                   />
 
@@ -1118,6 +1180,7 @@ onUnmounted(() => {
                     v-else-if="block.type === 'tool-call-summary'"
                     :block="block"
                   />
+                  </template>
                 </div>
             </template>
             <template v-else-if="bubbleIndex === 0 && message.content && !showMessageTail">
@@ -1241,5 +1304,17 @@ onUnmounted(() => {
   /* Native Virtual Scrolling: defers rendering and layout of off-screen messages */
   content-visibility: auto;
   contain-intrinsic-size: auto 100px;
+}
+
+.vcp-history-tool-process {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.vcp-history-tool-process[aria-expanded='true'] > svg {
+  transform: rotate(90deg);
+}
+
+.vcp-history-tool-failure {
+  font-weight: 600;
 }
 </style>
